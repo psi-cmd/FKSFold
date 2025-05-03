@@ -34,7 +34,7 @@ python examples/predict_structure_fks.py
 The FKSFold repo is highly relied on the [Chai-1](https://github.com/chaidiscovery/chai-lab) repo. If you found this repo useful, please cite the following:
 ```
 @article{FKSFold-Technical-Report,
-	title        = {FKSFold: Applying Feynman-Kac Steering to Guide Diffusion Process in AlphaFold3-type Model Inference for Molecular Glue Induced Ternary Structure Prediction},
+	title        = {FKSFold: Improving AlphaFold3-Type Predictions of Molecular Glue–Induced Ternary Complexes with Feynman–Kac–Steered Diffusion},
 	author       = {Shen, Jian and Zhou, Shengmin and Che, Xing},
 	year         = 2025,
 }
