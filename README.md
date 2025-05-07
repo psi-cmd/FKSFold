@@ -34,9 +34,15 @@ python examples/predict_structure_fks.py
 The FKSFold repo is highly relied on the [Chai-1](https://github.com/chaidiscovery/chai-lab) repo. If you found this repo useful, please cite the following:
 ```
 @article{FKSFold-Technical-Report,
-	title        = {FKSFold: Improving AlphaFold3-Type Predictions of Molecular Glue–Induced Ternary Complexes with Feynman–Kac–Steered Diffusion},
+	title        = {FKSFold: Improving AlphaFold3-Type Predictions of Molecular Glue-Induced Ternary Complexes with Feynman-Kac-Steered Diffusion},
 	author       = {Shen, Jian and Zhou, Shengmin and Che, Xing},
 	year         = 2025,
+	journal      = {bioRxiv},
+	publisher    = {Cold Spring Harbor Laboratory},
+	doi          = {10.1101/2025.05.03.651455},
+	url          = {https://www.biorxiv.org/content/10.1101/2025.05.03.651455v1},
+	elocation-id = {2025.05.03.651455},
+	eprint       = {https://www.biorxiv.org/content/10.1101/2025.05.03.651455v1.full.pdf}
 }
 
 @article{Chai-1-Technical-Report,
