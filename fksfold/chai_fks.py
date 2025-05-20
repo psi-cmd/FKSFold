@@ -558,7 +558,6 @@ def run_folding_on_context(
                 # Ensure different seeds for each particle at each step
                 torch.manual_seed(seed + step_idx * num_particles + particle_idx)
 
-
             # Center coords - operates on single particle's pos [batch=1, atoms, 3]
             atom_pos_candidate = center_random_augmentation(
                 particle.atom_pos.clone(),
@@ -592,6 +591,7 @@ def run_folding_on_context(
                 d_i_prime = (atom_pos_candidate - denoised_pos) / sigma_next
                 atom_pos_candidate = atom_pos_candidate + (sigma_next - sigma_hat) * ((d_i_prime + d_i) / 2)
 
+            particle.atom_pos = atom_pos_candidate
 
         # Check if we need to resample every resampling_interval steps
         if particle_filter.should_resample(step_idx, sigma_next):
@@ -651,6 +651,10 @@ def run_folding_on_context(
     # Use the best particle for final output
     best_particle = particle_filter.get_best_particle()
     atom_pos = best_particle.atom_pos.detach().clone()
+    # atom_pos = center_random_augmentation(
+    #     atom_pos,
+    #     atom_single_mask=atom_single_mask,
+    # )
 
     # We won't be running diffusion anymore
     del diffusion_module, static_diffusion_inputs, particle_filter
