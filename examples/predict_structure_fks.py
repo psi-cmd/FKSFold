@@ -4,6 +4,7 @@ import shutil
 from pathlib import Path
 import numpy as np
 
+from chai_lab.chai1 import run_inference as run_inference_chai
 from fksfold.chai_fks import run_inference
 
 logging.basicConfig(level=logging.INFO)  # control verbosity
