@@ -221,7 +221,7 @@ class ParticleFilter:
         
         # Get historical scores (if exists)
         historical_scores = torch.tensor([
-            p.historical_ptm if p.historical_ptm is not None else float('-inf') 
+            p.historical_ptm if p.historical_ptm is not None else float('0') 
             for p in self.particles
         ], device=self.device)
 
