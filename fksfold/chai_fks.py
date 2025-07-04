@@ -53,6 +53,10 @@ from chai_lab.chai1 import (
 )
 import chai_lab.ranking.ptm as ptm
 
+from .utils import build_restype_mapping
+
+from biopandas.mmcif import PandasMmcif
+from biopandas.pdb import PandasPdb
 
 # %%
 # Inference logic
@@ -176,6 +180,8 @@ class ParticleState:
     interface_ptm: Tensor | None = None
     avg_interface_ptm: float | None = None
     historical_ptm: float | None = None 
+    rmsd: float | None = float("inf")
+    rmsd_derivative: Tensor | None = None
 
 
 class ParticleFilter:
@@ -217,7 +223,10 @@ class ParticleFilter:
             return
 
         # Get current scores
-        current_scores = torch.tensor([p.avg_interface_ptm for p in self.particles], device=self.device)
+        current_scores = torch.tensor([p.avg_interface_ptm + max(0, 1 - p.rmsd/20) for p in self.particles], device=self.device)
+        print([p.avg_interface_ptm - p.rmsd for p in self.particles])
+        print([p.avg_interface_ptm for p in self.particles])
+        print([p.rmsd for p in self.particles])
         
         # Get historical scores (if exists)
         historical_scores = torch.tensor([
@@ -291,6 +300,8 @@ def run_folding_on_context(
     seed: int | None = None,
     device: torch.device | None = None,
     low_memory: bool,
+    ref_structure_file: Path,
+    rmsd_strength: float = 0.0,
     **kwargs,
 ) -> StructureCandidates:
     """
@@ -310,6 +321,15 @@ def run_folding_on_context(
 
     # Clear memory
     torch.cuda.empty_cache()
+
+    if ref_structure_file.endswith(".cif"):
+        ref_df = PandasMmcif().read_mmcif(ref_structure_file).df["ATOM"]
+        ref_df = clean_df(ref_df)
+    elif ref_structure_file.endswith(".pdb"):
+        ref_df = PandasPdb().read_pdb(ref_structure_file).df["ATOM"]
+        ref_df = clean_df(ref_df)
+    else:
+        raise ValueError(f"Unsupported file type: {ref_structure_file}")
 
     ##
     ## Validate inputs
@@ -356,7 +376,6 @@ def run_folding_on_context(
         inputs["template_mask"], "b t n1, b t n2 -> b t n1 n2"
     )
     block_atom_pair_mask = inputs["block_atom_pair_mask"]
-
     ##
     ## Load exported models
     ##
@@ -559,10 +578,13 @@ def run_folding_on_context(
                 torch.manual_seed(seed + step_idx * num_particles + particle_idx)
 
             # Center coords - operates on single particle's pos [batch=1, atoms, 3]
-            atom_pos_candidate = center_random_augmentation(
-                particle.atom_pos.clone(),
-                atom_single_mask=atom_single_mask,
-            )
+            if sigma_next < fk_sigma_threshold:
+                atom_pos_candidate = particle.atom_pos.clone()
+            else:
+                atom_pos_candidate = center_random_augmentation(
+                    particle.atom_pos.clone(),
+                    atom_single_mask=atom_single_mask,
+                )
 
             # Alg 2. lines 4-6
             noise = DiffusionConfig.S_noise * torch.randn(
@@ -590,6 +612,15 @@ def run_folding_on_context(
                 )
                 d_i_prime = (atom_pos_candidate - denoised_pos) / sigma_next
                 atom_pos_candidate = atom_pos_candidate + (sigma_next - sigma_hat) * ((d_i_prime + d_i) / 2)
+
+            lr_max = rmsd_strength         # how strong the RMSD force is
+            if sigma_next < fk_sigma_threshold:
+                progress = (fk_sigma_threshold - sigma_next) / fk_sigma_threshold
+                lr_rmsd  = lr_max * progress.clamp(0,1)     # lr_max 先设 0.5
+                particle.rmsd, particle.rmsd_derivative = get_rmsd_and_derivative(inputs, particle.atom_pos, ref_df)
+                n_matched_atoms = (particle.rmsd_derivative[0].norm(dim=1) > 0).sum().item()
+                lr_rmsd *= n_matched_atoms
+                atom_pos_candidate = atom_pos_candidate - lr_rmsd * particle.rmsd_derivative.to(device).float()
 
             particle.atom_pos = atom_pos_candidate
 
@@ -643,6 +674,7 @@ def run_folding_on_context(
                     particle.plddt = temp_plddt.detach()
                     particle.interface_ptm = ptm_scores.interface_ptm.detach()
                     particle.avg_interface_ptm = ptm_scores.interface_ptm.mean().item()
+                    
 
             # Perform resampling
             particle_filter.resample()
@@ -824,3 +856,58 @@ def run_folding_on_context(
         pde=pde_scores,
         plddt=plddt_scores,
     )
+
+
+import torch
+from chai_lab.utils.tensor_utils import tensorcode_to_string
+from chai_lab.data.io.cif_utils import _tensor_to_atom_names, get_chain_letter
+from fksfold.utils import ProteinDFUtils
+import pandas as pd
+
+def predicted_atoms_to_df(inputs: dict, atom_pos: torch.Tensor):
+    """
+    Return { (chain, resSeq, atomName): coord } for current batch (batch=0)
+    """
+    sc = move_data_to_device(inputs, torch.device("cpu"))
+    # 取 batch=0
+    asym_id      = sc["token_asym_id"][0]          # (N_res,)
+    res_idx      = sc["token_residue_index"][0]    # (N_res,)
+    res_name3    = sc["token_residue_name"][0]     # (N_res,8)
+    atom_token   = sc["atom_token_index"][0]       # (N_atom,)
+    atom_name_chr= sc["atom_ref_name_chars"][0]    # (N_atom,4)
+    exists_mask  = sc["atom_exists_mask"][0]       # (N_atom,)
+
+    # 预先解码
+    res_name3_str = [tensorcode_to_string(x).strip() for x in res_name3]
+    # Ensure the tensor is on CPU to avoid device-related issues during conversion
+    atom_names  = _tensor_to_atom_names(atom_name_chr.cpu())
+    chain_letters = [get_chain_letter(int(i)) if i > 0 else "UNK" for i in asym_id]
+
+    # 建表
+    result = []
+    for a_idx in torch.where(exists_mask)[0].tolist():
+        t_idx   = atom_token[a_idx].item()
+        key = [
+            chain_letters[t_idx],              # 'A'
+            int(res_idx[t_idx].item()) + 1,    
+            res_name3_str[t_idx].strip(),
+            atom_names[a_idx].strip(),         # 'CA', 'N', ...
+        ]
+        result.append(key + atom_pos[0, a_idx].cpu().tolist() + [a_idx])
+    return pd.DataFrame(result, columns=["label_asym_id", "label_seq_id", "label_comp_id", "label_atom_id", "Cartn_x", "Cartn_y", "Cartn_z", "atom_index"])
+
+def get_rmsd_and_derivative(inputs, atom_pos, ref_atoms_df):
+    predicted_atoms_df = predicted_atoms_to_df(inputs, atom_pos)
+    total_atoms = atom_pos.shape[1]
+    rmsd, rmsd_derivative_np = ProteinDFUtils.calculate_rmsd_between_matched_chains_and_derivative(predicted_atoms_df, ref_atoms_df, total_atoms)
+    rmsd_derivative = torch.from_numpy(rmsd_derivative_np).unsqueeze(0)  # shape (1,N,3)
+    return rmsd, rmsd_derivative
+
+def clean_df(df):
+    # remove Hydrogen atoms
+    df = df[df["type_symbol"] != "H"]
+    # remove water molecules
+    df = df[df["label_comp_id"] != "HOH"]
+    # remove alternative locations
+    df = df[df["label_alt_id"].isna() | (df["label_alt_id"] == "A")]
+    return df
