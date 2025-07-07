@@ -92,6 +92,7 @@ def run_inference(
     **kwargs
 ) -> StructureCandidates:
     # Check for deprecated num_diffn_samples in kwargs
+    kwargs["fasta_file"] = fasta_file
     if 'num_diffn_samples' in kwargs:
         warnings.warn(
             "'num_diffn_samples' value is ignored in the fks implementation. "
@@ -617,11 +618,12 @@ def run_folding_on_context(
             if sigma_next < fk_sigma_threshold:
                 progress = (fk_sigma_threshold - sigma_next) / fk_sigma_threshold
                 lr_rmsd  = lr_max * progress.clamp(0,1)     # lr_max 先设 0.5
-                particle.rmsd, particle.rmsd_derivative = get_rmsd_and_derivative(inputs, particle.atom_pos, ref_df)
+                particle.rmsd, particle.rmsd_derivative, ligand_index = get_rmsd_and_derivative(inputs, particle.atom_pos, ref_df, kwargs["fasta_file"], ref_structure_file)
                 n_matched_atoms = (particle.rmsd_derivative[0].norm(dim=1) > 0).sum().item()
                 lr_rmsd *= n_matched_atoms
                 atom_pos_candidate = atom_pos_candidate - lr_rmsd * particle.rmsd_derivative.to(device).float()
-
+                print(f"original diffusion step: { ((sigma_next - sigma_hat) * d_i)[0, ligand_index, :]}")
+                print(f"RMSD force: {lr_rmsd * particle.rmsd_derivative.to(device).float()[0, ligand_index, :]}")
             particle.atom_pos = atom_pos_candidate
 
         # Check if we need to resample every resampling_interval steps
@@ -894,14 +896,17 @@ def predicted_atoms_to_df(inputs: dict, atom_pos: torch.Tensor):
             atom_names[a_idx].strip(),         # 'CA', 'N', ...
         ]
         result.append(key + atom_pos[0, a_idx].cpu().tolist() + [a_idx])
+
+    
     return pd.DataFrame(result, columns=["label_asym_id", "label_seq_id", "label_comp_id", "label_atom_id", "Cartn_x", "Cartn_y", "Cartn_z", "atom_index"])
 
-def get_rmsd_and_derivative(inputs, atom_pos, ref_atoms_df):
+def get_rmsd_and_derivative(inputs, atom_pos, ref_atoms_df, fasta_file, ref_structure_file):
     predicted_atoms_df = predicted_atoms_to_df(inputs, atom_pos)
     total_atoms = atom_pos.shape[1]
-    rmsd, rmsd_derivative_np = ProteinDFUtils.calculate_rmsd_between_matched_chains_and_derivative(predicted_atoms_df, ref_atoms_df, total_atoms)
+    ligand_atom_name_mapping = get_ligand_atom_name_mapping(ref_structure_file, get_molecularglue_smiles(fasta_file))
+    rmsd, rmsd_derivative_np, ligand_index = ProteinDFUtils.calculate_rmsd_between_matched_chains_and_derivative(predicted_atoms_df, ref_atoms_df, total_atoms, ligand_atom_name_mapping)
     rmsd_derivative = torch.from_numpy(rmsd_derivative_np).unsqueeze(0)  # shape (1,N,3)
-    return rmsd, rmsd_derivative
+    return rmsd, rmsd_derivative, ligand_index
 
 def clean_df(df):
     # remove Hydrogen atoms
@@ -911,3 +916,30 @@ def clean_df(df):
     # remove alternative locations
     df = df[df["label_alt_id"].isna() | (df["label_alt_id"] == "A")]
     return df
+
+from .mol_utils import get_ligand_atom_name_mapping_from_ligand_and_chai_lab
+
+import functools
+
+def only_exec_once(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        if not wrapper.executed:
+            wrapper.executed = True
+            wrapper.result = func(*args, **kwargs)
+            return wrapper.result
+        else:
+            return wrapper.result
+    wrapper.executed = False
+    return wrapper
+
+@only_exec_once
+def get_ligand_atom_name_mapping(cif_file: str, smiles: str) -> dict[str, str]:
+    return get_ligand_atom_name_mapping_from_ligand_and_chai_lab(cif_file, smiles)
+
+def get_molecularglue_smiles(fasta_file: str) -> str:
+    with open(fasta_file, "r") as f:
+        for line in f:
+            if line.startswith(">ligand"):
+                return f.readline().strip()
+    raise ValueError("No smiles found in fasta file")

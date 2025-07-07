@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import sys
 import os
+import uuid
 
 # add parent directory before path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -18,7 +19,10 @@ logging.basicConfig(level=logging.INFO)  # control verbosity
 # - each entity is labeled with unique name;
 # - ligands are encoded with SMILES; modified residues encoded like AAA(SEP)AAA
 
-tmp_dir = Path(tempfile.mkdtemp())
+# tmp_dir = Path(tempfile.mkdtemp())
+random_str = str(uuid.uuid4())
+tmp_dir = Path(f"./result/tmp_{random_str}")
+os.makedirs(tmp_dir, exist_ok=True)
 
 fasta_file = sys.argv[1]
 

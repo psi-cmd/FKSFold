@@ -15,8 +15,8 @@ def get_diffusion_idx_and_particle_idx(obj_name: str) -> tuple[int, int]:
 for obj in cmd.get_object_list():
     # diff_idx, particle_idx = get_diffusion_idx_and_particle_idx(obj)
     # 跳过 "8PPZ" 本身
-    if obj == "center_7_macro_2":
+    if obj == "center_14_macro_2_L42_rank1":
         continue
     # 执行对齐：将 obj（mobile）对齐到 8PPZ（target）
-    cmd.align(obj, "center_7_macro_2 and chain A")
+    cmd.align(obj, "center_14_macro_2_L42_rank1 and chain A")
     sleep(1)
