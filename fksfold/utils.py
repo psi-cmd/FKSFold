@@ -113,19 +113,40 @@ class ProteinDFUtils:
         return rmsd, grad_coords1
     
     @staticmethod
-    def update_ligand_atom_name(df_with_ligand: pd.DataFrame, ligand_atom_mapping: list[tuple[tuple[str, str], str]], updated_ligand_name: str):
+    def update_ligand_atom_name(
+        df_with_ligand: pd.DataFrame,
+        ligand_atom_mapping: list[tuple[tuple[str, str], str]] | None,
+        updated_ligand_name: str,
+    ) -> pd.DataFrame:
+        """Harmonize residue and atom names for ligand atoms in the reference dataframe.
+
+        Parameters
+        ----------
+        df_with_ligand : pd.DataFrame
+            DataFrame that contains only ligand atoms extracted from the reference structure.
+        ligand_atom_mapping : list | None
+            Mapping produced by `mol_utils.get_ligand_atom_name_mapping_from_ligand_and_chai_lab`.
+            Each element looks like `((ligand_res_name, ligand_atom_name), large_mol_atom_name)`.
+            When *None*, no renaming is performed and the original DataFrame is returned.
+        updated_ligand_name : str
+            The residue name (comp_id) used for the ligand in the predicted structure. All
+            corresponding rows in the reference DataFrame will be replaced with this value.
+        """
+
+        if ligand_atom_mapping is None:
+            return df_with_ligand
+
         for (ligand_name, ligand_atom_name), large_mol_atom_name in ligand_atom_mapping:
-            # df with exact ligand_name and ligand_atom_name should be updated to updated_ligand_name and large_mol_atom_name
-            df_with_ligand.loc[
-                (df_with_ligand["label_comp_id"] == ligand_name) & 
-                (df_with_ligand["label_atom_id"] == ligand_atom_name), 
-                "label_comp_id"
-            ] = updated_ligand_name
-            df_with_ligand.loc[
-                (df_with_ligand["label_comp_id"] == ligand_name) & 
-                (df_with_ligand["label_atom_id"] == ligand_atom_name), 
-                "label_atom_id"
-            ] = large_mol_atom_name
+            mask = (
+                (df_with_ligand["label_comp_id"] == ligand_name)
+                & (df_with_ligand["label_atom_id"] == ligand_atom_name)
+            )
+            # 一次性更新 comp_id 与 atom_name，避免第一次更新 comp_id 导致第二次匹配失败
+            df_with_ligand.loc[mask, ["label_comp_id", "label_atom_id"]] = [
+                updated_ligand_name,
+                large_mol_atom_name,
+            ]
+
         return df_with_ligand
 
     @staticmethod
