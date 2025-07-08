@@ -255,6 +255,7 @@ class ProteinDFUtils:
         deriv_array[np.array(index_list, dtype=int)] = grad_all.astype(np.float32)
 
         # STEERING STRATEGY
+        deriv_array = torch.from_numpy(deriv_array).unsqueeze(0)  # shape (1,N,3)
         device = "cuda" if torch.cuda.is_available() else "cpu"
         deriv_array = deriv_array.to(device).float()
 
@@ -269,7 +270,7 @@ class ProteinDFUtils:
             ligand_indices = df_update_lig["atom_index"].to_numpy(dtype=int)
             all_indices = np.arange(deriv_array.shape[0])
             is_ligand = np.isin(all_indices, ligand_indices)  # shape: (N_atoms,)
-            deriv_array[~is_ligand] = protein_lr_rmsd * deriv_array[~is_ligand]
-            deriv_array[is_ligand] = ligand_lr_rmsd * deriv_array[is_ligand]
+            deriv_array[0, ~is_ligand] = protein_lr_rmsd * deriv_array[0, ~is_ligand]
+            deriv_array[0, is_ligand] = ligand_lr_rmsd * deriv_array[0, is_ligand]
 
         return rmsd_total, deriv_array, df_update_lig["atom_index"].to_numpy(dtype=int)

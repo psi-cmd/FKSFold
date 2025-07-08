@@ -901,8 +901,7 @@ def get_rmsd_and_derivative(inputs, atom_pos, ref_atoms_df, fasta_file, ref_stru
     predicted_atoms_df = predicted_atoms_to_df(inputs, atom_pos)
     total_atoms = atom_pos.shape[1]
     ligand_atom_name_mapping = get_ligand_atom_name_mapping(ref_structure_file, get_molecularglue_smiles(fasta_file))
-    rmsd, rmsd_derivative_np, ligand_index = ProteinDFUtils.calculate_rmsd_between_matched_chains_and_derivative(predicted_atoms_df, ref_atoms_df, total_atoms, ligand_atom_name_mapping, **kwargs)
-    rmsd_derivative = torch.from_numpy(rmsd_derivative_np).unsqueeze(0)  # shape (1,N,3)
+    rmsd, rmsd_derivative, ligand_index = ProteinDFUtils.calculate_rmsd_between_matched_chains_and_derivative(predicted_atoms_df, ref_atoms_df, total_atoms, ligand_atom_name_mapping, **kwargs)
     return rmsd, rmsd_derivative, ligand_index
 
 def clean_df(df):
