@@ -119,7 +119,6 @@ class ProteinDFUtils:
         updated_ligand_name: str,
     ) -> pd.DataFrame:
         """Harmonize residue and atom names for ligand atoms in the reference dataframe.
-
         Parameters
         ----------
         df_with_ligand : pd.DataFrame
@@ -155,6 +154,10 @@ class ProteinDFUtils:
         df_ref,
         total_atoms: int,
         ligand_atom_name_map: dict[str, dict[str, str]] | None = None,
+        sigma_next: float | None = None,
+        fk_sigma_threshold: float = 1.0,
+        particle = None,
+        **kwargs,
     ):
         # matched_chains = ProteinDFUtils.match_chains(df1, df2)
         matched_chains = ProteinDFUtils.match_chains(df_update, df_ref)
@@ -250,5 +253,23 @@ class ProteinDFUtils:
 
         # map gradients back
         deriv_array[np.array(index_list, dtype=int)] = grad_all.astype(np.float32)
+
+        # STEERING STRATEGY
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        deriv_array = deriv_array.to(device).float()
+
+        if sigma_next < fk_sigma_threshold:
+            progress = (fk_sigma_threshold - sigma_next) / fk_sigma_threshold
+            protein_lr_rmsd  = kwargs["protein_lr_max"] * progress.clamp(0,1)     # lr_max 先设 0.5
+            ligand_lr_rmsd  = kwargs["ligand_lr_max"] * progress.clamp(0,1)     # lr_max 先设 0.5
+            n_matched_atoms = (deriv_array.norm(dim=1) > 0).sum().item()
+            protein_lr_rmsd *= n_matched_atoms
+            ligand_lr_rmsd *= n_matched_atoms
+
+            ligand_indices = df_update_lig["atom_index"].to_numpy(dtype=int)
+            all_indices = np.arange(deriv_array.shape[0])
+            is_ligand = np.isin(all_indices, ligand_indices)  # shape: (N_atoms,)
+            deriv_array[~is_ligand] = protein_lr_rmsd * deriv_array[~is_ligand]
+            deriv_array[is_ligand] = ligand_lr_rmsd * deriv_array[is_ligand]
 
         return rmsd_total, deriv_array, df_update_lig["atom_index"].to_numpy(dtype=int)

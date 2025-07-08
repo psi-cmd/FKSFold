@@ -614,16 +614,13 @@ def run_folding_on_context(
                 d_i_prime = (atom_pos_candidate - denoised_pos) / sigma_next
                 atom_pos_candidate = atom_pos_candidate + (sigma_next - sigma_hat) * ((d_i_prime + d_i) / 2)
 
-            lr_max = rmsd_strength         # how strong the RMSD force is
             if sigma_next < fk_sigma_threshold:
-                progress = (fk_sigma_threshold - sigma_next) / fk_sigma_threshold
-                lr_rmsd  = lr_max * progress.clamp(0,1)     # lr_max 先设 0.5
-                particle.rmsd, particle.rmsd_derivative, ligand_index = get_rmsd_and_derivative(inputs, particle.atom_pos, ref_df, kwargs["fasta_file"], ref_structure_file)
-                n_matched_atoms = (particle.rmsd_derivative[0].norm(dim=1) > 0).sum().item()
-                lr_rmsd *= n_matched_atoms
-                atom_pos_candidate = atom_pos_candidate - lr_rmsd * particle.rmsd_derivative.to(device).float()
+                particle.rmsd, particle.rmsd_derivative, ligand_index = get_rmsd_and_derivative(inputs, particle.atom_pos, ref_df, kwargs["fasta_file"], ref_structure_file,
+                                                                                                sigma_next=sigma_next, fk_sigma_threshold=fk_sigma_threshold, protein_lr_max=kwargs["protein_lr_max"],
+                                                                                                ligand_lr_max=kwargs["ligand_lr_max"], particle=particle)
+                atom_pos_candidate = atom_pos_candidate - particle.rmsd_derivative.to(device).float()
                 print(f"original diffusion step: { ((sigma_next - sigma_hat) * d_i)[0, ligand_index, :]}")
-                print(f"RMSD force: {lr_rmsd * particle.rmsd_derivative.to(device).float()[0, ligand_index, :]}")
+                print(f"RMSD force: {particle.rmsd_derivative[0, ligand_index, :]}")
             particle.atom_pos = atom_pos_candidate
 
         # Check if we need to resample every resampling_interval steps
@@ -900,11 +897,11 @@ def predicted_atoms_to_df(inputs: dict, atom_pos: torch.Tensor):
     
     return pd.DataFrame(result, columns=["label_asym_id", "label_seq_id", "label_comp_id", "label_atom_id", "Cartn_x", "Cartn_y", "Cartn_z", "atom_index"])
 
-def get_rmsd_and_derivative(inputs, atom_pos, ref_atoms_df, fasta_file, ref_structure_file):
+def get_rmsd_and_derivative(inputs, atom_pos, ref_atoms_df, fasta_file, ref_structure_file, **kwargs):
     predicted_atoms_df = predicted_atoms_to_df(inputs, atom_pos)
     total_atoms = atom_pos.shape[1]
     ligand_atom_name_mapping = get_ligand_atom_name_mapping(ref_structure_file, get_molecularglue_smiles(fasta_file))
-    rmsd, rmsd_derivative_np, ligand_index = ProteinDFUtils.calculate_rmsd_between_matched_chains_and_derivative(predicted_atoms_df, ref_atoms_df, total_atoms, ligand_atom_name_mapping)
+    rmsd, rmsd_derivative_np, ligand_index = ProteinDFUtils.calculate_rmsd_between_matched_chains_and_derivative(predicted_atoms_df, ref_atoms_df, total_atoms, ligand_atom_name_mapping, **kwargs)
     rmsd_derivative = torch.from_numpy(rmsd_derivative_np).unsqueeze(0)  # shape (1,N,3)
     return rmsd, rmsd_derivative, ligand_index
 

@@ -54,7 +54,9 @@ candidates = run_inference(
     low_memory=False,
     use_msa_server=False,
     ref_structure_file=sys.argv[2],
-    rmsd_strength=float(sys.argv[3]),  # from 0 to 1, how strong the RMSD force is
+    # rmsd_strength=float(sys.argv[3]),  # from 0 to 1, how strong the RMSD force is
+    protein_lr_max=float(sys.argv[3]),
+    ligand_lr_max=float(sys.argv[4]),
 )
 
 cif_paths = candidates.cif_paths
