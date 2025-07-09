@@ -224,7 +224,7 @@ class ParticleFilter:
             return
 
         # Get current scores
-        current_scores = torch.tensor([p.avg_interface_ptm + max(0, 1 - p.rmsd/20) for p in self.particles], device=self.device)
+        current_scores = torch.tensor([ max(0, 1 - p.rmsd/20) for p in self.particles], device=self.device)
         print([p.avg_interface_ptm - p.rmsd for p in self.particles])
         print([p.avg_interface_ptm for p in self.particles])
         print([p.rmsd for p in self.particles])
@@ -618,13 +618,28 @@ def run_folding_on_context(
                 particle.rmsd, particle.rmsd_derivative, ligand_index = get_rmsd_and_derivative(inputs, particle.atom_pos, ref_df, kwargs["fasta_file"], ref_structure_file,
                                                                                                 sigma_next=sigma_next, fk_sigma_threshold=fk_sigma_threshold, protein_lr_max=kwargs["protein_lr_max"],
                                                                                                 ligand_lr_max=kwargs["ligand_lr_max"], particle=particle)
-                atom_pos_candidate = atom_pos_candidate - particle.rmsd_derivative.to(device).float()
-                print(f"original diffusion step: { ((sigma_next - sigma_hat) * d_i)[0, ligand_index, :]}")
-                print(f"RMSD force: {particle.rmsd_derivative[0, ligand_index, :]}")
+                # atom_pos_candidate = atom_pos_candidate - particle.rmsd_derivative.to(device).float()
+                # print(f"original diffusion step: { ((sigma_next - sigma_hat) * d_i)[0, ligand_index, :]}")
+                # print(f"RMSD force: {particle.rmsd_derivative[0, ligand_index, :]}")
             particle.atom_pos = atom_pos_candidate
 
+            if "save_intermediate" in kwargs and kwargs["save_intermediate"]:
+                cif_out_path = output_dir.joinpath(f"pred.model_idx_{step_idx}_particle_{particle_idx}.cif")
+                save_to_cif(
+                    coords=particle.atom_pos.to(device="cpu"),
+                    bfactors=particle.plddt.to(device="cpu"),
+                    output_batch=move_data_to_device(inputs, torch.device("cpu")),
+                    write_path=cif_out_path,
+                    # Set asym names to be A, B, C, ...
+                    asym_entity_names={
+                        i: get_chain_letter(i)
+                        for i in range(1, len(feature_context.chains) + 1)
+                    },
+                )
+
         # Check if we need to resample every resampling_interval steps
-        if particle_filter.should_resample(step_idx, sigma_next):
+        # if particle_filter.should_resample(step_idx, sigma_next):
+        if False:
             # Calculate scores for all particles
             for particle in particle_filter.particles:
                 with torch.inference_mode():

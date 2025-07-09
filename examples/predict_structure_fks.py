@@ -6,6 +6,7 @@ import numpy as np
 import sys
 import os
 import uuid
+from itertools import product
 
 # add parent directory before path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -31,33 +32,57 @@ with open(fasta_file, "r") as f:
     fasta_path = tmp_dir / Path(fasta_file).name
     fasta_path.write_text(fasta_context)
 
+class ConfigScheduler:
+    def __init__(self):
+        self.configs = []
+
+        self.create_config()
+
+    def create_config(self):
+        param_grid = {
+            "protein_lr_max": [0.6],
+            "ligand_lr_max": [0.6],
+            "resampling_interval": [5],
+            "fk_sigma_threshold": [5.0],
+        }
+
+        for params in product(*param_grid.values()):
+            self.configs.append(dict(zip(param_grid.keys(), params)))
+
+
+    def __iter__(self):
+        for config in self.configs:
+            yield config
 
 # FKS version: Score=0.9383
-output_dir = tmp_dir / f"outputs_{sys.argv[3]}"
 # if you want to use ft steering:
-candidates = run_inference(
-    fasta_file=fasta_path,
-    output_dir=output_dir,
-    # constraint_path="./path_to_contact.restraints",
-    num_trunk_recycles=3,
-    num_diffn_timesteps=200,
-    num_particles=4,  # number of diffusion paths
-    resampling_interval=5,  # diffusion path length
-    lambda_weight=10.0,  # lower this to, say 2.0, to make it more random
-    potential_type="vanilla",  # "diff" or "max" or "vanilla"
-    # fk_sigma_threshold=float("inf"),
-    fk_sigma_threshold=2.0,
-    num_trunk_samples=1,
-    seed=42,
-    device="cuda:0",
-    use_esm_embeddings=True,
-    low_memory=False,
-    use_msa_server=False,
-    ref_structure_file=sys.argv[2],
-    # rmsd_strength=float(sys.argv[3]),  # from 0 to 1, how strong the RMSD force is
-    protein_lr_max=float(sys.argv[3]),
-    ligand_lr_max=float(sys.argv[4]),
-)
+for config in ConfigScheduler():
+    output_dir = tmp_dir / f"outputs_{config['protein_lr_max']}_{config['ligand_lr_max']}_{config['resampling_interval']}_{config['fk_sigma_threshold']}"
+    os.makedirs(output_dir, exist_ok=True)
+
+    candidates = run_inference(
+        fasta_file=fasta_path,
+        output_dir=output_dir,
+        # constraint_path="./path_to_contact.restraints",
+        num_trunk_recycles=3,
+        num_diffn_timesteps=200,
+        num_particles=4,  # number of diffusion paths
+        resampling_interval=config["resampling_interval"],  # diffusion path length
+        lambda_weight=20.0,  # lower this to, say 2.0, to make it more random
+        potential_type="vanilla",  # "diff" or "max" or "vanilla"
+        fk_sigma_threshold=config["fk_sigma_threshold"],
+        num_trunk_samples=1,
+        seed=42,
+        device="cuda:0",
+        use_esm_embeddings=True,
+        low_memory=False,
+        use_msa_server=False,
+        ref_structure_file=sys.argv[2],
+        # rmsd_strength=float(sys.argv[3]),  # from 0 to 1, how strong the RMSD force is
+        protein_lr_max=config["protein_lr_max"],
+        ligand_lr_max=config["ligand_lr_max"],
+        save_intermediate=True,
+    )
 
 cif_paths = candidates.cif_paths
 scores = [rd.aggregate_score for rd in candidates.ranking_data]
