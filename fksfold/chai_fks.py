@@ -845,7 +845,7 @@ def run_folding_on_context(
         ## Write output files
         ##
 
-        cif_out_path = output_dir.joinpath(f"pred.model_idx_{idx}.cif")
+        cif_out_path = output_dir.joinpath("..", f"pred_{param_dict_format(global_config)}.cif")
         aggregate_score = ranking_outputs.aggregate_score.item()
         print(f"Score={aggregate_score:.4f}, writing output to {cif_out_path}")
 
@@ -961,3 +961,7 @@ def get_molecularglue_smiles(fasta_file: str) -> str:
             if line.startswith(">ligand"):
                 return f.readline().strip()
     raise ValueError("No smiles found in fasta file")
+
+# output parameter
+def param_dict_format(config):
+    return "_".join([f"{v}" for k, v in config.items()])

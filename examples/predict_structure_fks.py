@@ -1,12 +1,13 @@
-import tempfile
 import logging
-import shutil
 from pathlib import Path
 import numpy as np
 import sys
 import os
 import uuid
 from itertools import product
+
+import multiprocessing as mp
+from multi_gpu import gpu_map
 
 # add parent directory before path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -49,25 +50,31 @@ class ConfigScheduler:
 
     @staticmethod
     def param_dict_format(config):
-        return f"{config['protein_lr_max']}_{config['ligand_lr_max']}_{config['resampling_interval']}_{config['fk_sigma_threshold']}_{config['rmsd_sigma_threshold']}_{config['lambda_weight']}"
+        return "_".join([f"{v}" for k, v in config.items()])
 
     def save_progress(self):
-        import pickle
-        with open("progress.pkl", "wb") as f:
-            pickle.dump(self.configs, f)
+        # multiprocess safe
+        with mp.Lock():
+            import pickle
+            with open("progress.pkl", "wb") as f:
+                pickle.dump(self.configs, f)
 
     def load_progress(self):
         import pickle
         with open("progress.pkl", "rb") as f:
             self.configs = pickle.load(f)
 
+
 scheduler = ConfigScheduler()
 if os.path.exists("progress.pkl"):
     scheduler.load_progress()
 # FKS version: Score=0.9383
 # if you want to use ft steering:
-from fksfold.config import update_global_config
-for config in scheduler:
+
+@gpu_map
+def run(config):
+    from fksfold.config import update_global_config
+
     random_str = str(uuid.uuid4())
     tmp_dir = Path(f"./result/tmp_{random_str}")
     os.makedirs(tmp_dir, exist_ok=True)
@@ -107,12 +114,14 @@ for config in scheduler:
         # save_intermediate=True,
     )
 
-    scheduler.save_progress()
+    scheduler.save_progress()    
 
-cif_paths = candidates.cif_paths
-scores = [rd.aggregate_score for rd in candidates.ranking_data]
+if __name__ == "__main__":
+    run(scheduler.configs)
+# cif_paths = candidates.cif_paths
+# scores = [rd.aggregate_score for rd in candidates.ranking_data]
 
-# Load pTM, ipTM, pLDDTs and clash scores
-scores = np.load(output_dir.joinpath("scores.model_idx_0.npz"))
+# # Load pTM, ipTM, pLDDTs and clash scores
+# scores = np.load(output_dir.joinpath("scores.model_idx_0.npz"))
 
 
