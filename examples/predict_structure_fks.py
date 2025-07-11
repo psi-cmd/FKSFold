@@ -51,10 +51,23 @@ class ConfigScheduler:
     def param_dict_format(config):
         return f"{config['protein_lr_max']}_{config['ligand_lr_max']}_{config['resampling_interval']}_{config['fk_sigma_threshold']}_{config['rmsd_sigma_threshold']}_{config['lambda_weight']}"
 
+    def save_progress(self):
+        import pickle
+        with open("progress.pkl", "wb") as f:
+            pickle.dump(self.configs, f)
+
+    def load_progress(self):
+        import pickle
+        with open("progress.pkl", "rb") as f:
+            self.configs = pickle.load(f)
+
+scheduler = ConfigScheduler()
+if os.path.exists("progress.pkl"):
+    scheduler.load_progress()
 # FKS version: Score=0.9383
 # if you want to use ft steering:
 from fksfold.config import update_global_config
-for config in ConfigScheduler():
+for config in scheduler:
     random_str = str(uuid.uuid4())
     tmp_dir = Path(f"./result/tmp_{random_str}")
     os.makedirs(tmp_dir, exist_ok=True)
@@ -93,6 +106,8 @@ for config in ConfigScheduler():
         ligand_lr_max=config["ligand_lr_max"],
         # save_intermediate=True,
     )
+
+    scheduler.save_progress()
 
 cif_paths = candidates.cif_paths
 scores = [rd.aggregate_score for rd in candidates.ranking_data]
