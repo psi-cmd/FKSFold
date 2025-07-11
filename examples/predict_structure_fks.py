@@ -21,16 +21,7 @@ logging.basicConfig(level=logging.INFO)  # control verbosity
 # - ligands are encoded with SMILES; modified residues encoded like AAA(SEP)AAA
 
 # tmp_dir = Path(tempfile.mkdtemp())
-random_str = str(uuid.uuid4())
-tmp_dir = Path(f"./result/tmp_{random_str}")
-os.makedirs(tmp_dir, exist_ok=True)
 
-fasta_file = sys.argv[1]
-
-with open(fasta_file, "r") as f:
-    fasta_context = f.read().strip()
-    fasta_path = tmp_dir / Path(fasta_file).name
-    fasta_path.write_text(fasta_context)
 
 class ConfigScheduler:
     def __init__(self):
@@ -64,6 +55,17 @@ class ConfigScheduler:
 # if you want to use ft steering:
 from fksfold.config import update_global_config
 for config in ConfigScheduler():
+    random_str = str(uuid.uuid4())
+    tmp_dir = Path(f"./result/tmp_{random_str}")
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    fasta_file = sys.argv[1]
+
+    with open(fasta_file, "r") as f:
+        fasta_context = f.read().strip()
+        fasta_path = tmp_dir / Path(fasta_file).name
+        fasta_path.write_text(fasta_context)
+
     update_global_config(**config)
     output_dir = tmp_dir / f"outputs_{ConfigScheduler.param_dict_format(config)}"
     os.makedirs(output_dir, exist_ok=True)
