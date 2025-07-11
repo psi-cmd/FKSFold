@@ -57,6 +57,7 @@ from .utils import build_restype_mapping
 
 from biopandas.mmcif import PandasMmcif
 from biopandas.pdb import PandasPdb
+from .config import global_config
 
 # %%
 # Inference logic
@@ -216,18 +217,26 @@ class ParticleFilter:
     def should_resample(self, step_idx: int, sigma_next: float) -> bool:
         return (step_idx > 0 and 
                 step_idx % self.resampling_interval == 0 and 
-                sigma_next < self.restraint_sigma_threshold)
+                (sigma_next < self.restraint_sigma_threshold or sigma_next < global_config["rmsd_sigma_threshold"] ))
     
     def resample(self) -> None:
         """Resample particles based on their scores"""
         if not all(p.avg_interface_ptm is not None for p in self.particles):
             return
-
+        if global_config["rmsd_sigma_threshold"] == 0 and global_config["fk_sigma_threshold"] == 0:
+            return
+        
+        current_scores = torch.zeros(len(self.particles), device=self.device)
         # Get current scores
-        current_scores = torch.tensor([ max(0, 1 - p.rmsd/20) for p in self.particles], device=self.device)
-        print([p.avg_interface_ptm - p.rmsd for p in self.particles])
-        print([p.avg_interface_ptm for p in self.particles])
-        print([p.rmsd for p in self.particles])
+        if global_config["current_sigma"] < global_config["rmsd_sigma_threshold"]:
+            rmsd_scores = torch.tensor([-p.rmsd / 20 for p in self.particles], device=self.device)
+            print("rmsd_scores:", rmsd_scores)
+            current_scores += rmsd_scores
+        if global_config["current_sigma"] < global_config["fk_sigma_threshold"]:
+            ptm_scores = torch.tensor([p.avg_interface_ptm for p in self.particles], device=self.device)
+            print("ptm_scores:", ptm_scores)
+            current_scores += ptm_scores
+        print("current_scores:", current_scores)
         
         # Get historical scores (if exists)
         historical_scores = torch.tensor([
@@ -579,13 +588,10 @@ def run_folding_on_context(
                 torch.manual_seed(seed + step_idx * num_particles + particle_idx)
 
             # Center coords - operates on single particle's pos [batch=1, atoms, 3]
-            if sigma_next < fk_sigma_threshold:
-                atom_pos_candidate = particle.atom_pos.clone()
-            else:
-                atom_pos_candidate = center_random_augmentation(
-                    particle.atom_pos.clone(),
-                    atom_single_mask=atom_single_mask,
-                )
+            atom_pos_candidate = center_random_augmentation(
+                particle.atom_pos.clone(),
+                atom_single_mask=atom_single_mask,
+            )
 
             # Alg 2. lines 4-6
             noise = DiffusionConfig.S_noise * torch.randn(
@@ -604,6 +610,8 @@ def run_folding_on_context(
             d_i = (atom_pos_hat - denoised_pos) / sigma_hat
             atom_pos_candidate = atom_pos_hat + (sigma_next - sigma_hat) * d_i
 
+            if global_config is not None:
+                global_config["current_sigma"] = sigma_next
             # Lines 9-11
             if sigma_next != 0 and DiffusionConfig.second_order:  # second order update
                 denoised_pos = _denoise(
@@ -614,7 +622,7 @@ def run_folding_on_context(
                 d_i_prime = (atom_pos_candidate - denoised_pos) / sigma_next
                 atom_pos_candidate = atom_pos_candidate + (sigma_next - sigma_hat) * ((d_i_prime + d_i) / 2)
 
-            if sigma_next < fk_sigma_threshold:
+            if sigma_next < global_config["rmsd_sigma_threshold"]:
                 particle.rmsd, particle.rmsd_derivative, ligand_index = get_rmsd_and_derivative(inputs, particle.atom_pos, ref_df, kwargs["fasta_file"], ref_structure_file,
                                                                                                 sigma_next=sigma_next, fk_sigma_threshold=fk_sigma_threshold, protein_lr_max=kwargs["protein_lr_max"],
                                                                                                 ligand_lr_max=kwargs["ligand_lr_max"], particle=particle)
@@ -627,7 +635,7 @@ def run_folding_on_context(
                 cif_out_path = output_dir.joinpath(f"pred.model_idx_{step_idx}_particle_{particle_idx}.cif")
                 save_to_cif(
                     coords=particle.atom_pos.to(device="cpu"),
-                    bfactors=particle.plddt.to(device="cpu"),
+                    bfactors=None,
                     output_batch=move_data_to_device(inputs, torch.device("cpu")),
                     write_path=cif_out_path,
                     # Set asym names to be A, B, C, ...
@@ -638,8 +646,7 @@ def run_folding_on_context(
                 )
 
         # Check if we need to resample every resampling_interval steps
-        # if particle_filter.should_resample(step_idx, sigma_next):
-        if False:
+        if particle_filter.should_resample(step_idx, sigma_next):
             # Calculate scores for all particles
             for particle in particle_filter.particles:
                 with torch.inference_mode():

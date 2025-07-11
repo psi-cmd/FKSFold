@@ -42,8 +42,10 @@ class ConfigScheduler:
         param_grid = {
             "protein_lr_max": [0.6],
             "ligand_lr_max": [0.6],
-            "resampling_interval": [5],
-            "fk_sigma_threshold": [5.0],
+            "resampling_interval": [1],
+            "fk_sigma_threshold": [2],
+            "rmsd_sigma_threshold": [10],
+            "lambda_weight": [12.0, 15.0, 18.0],
         }
 
         for params in product(*param_grid.values()):
@@ -56,7 +58,9 @@ class ConfigScheduler:
 
 # FKS version: Score=0.9383
 # if you want to use ft steering:
+from fksfold.config import update_global_config
 for config in ConfigScheduler():
+    update_global_config(**config)
     output_dir = tmp_dir / f"outputs_{config['protein_lr_max']}_{config['ligand_lr_max']}_{config['resampling_interval']}_{config['fk_sigma_threshold']}"
     os.makedirs(output_dir, exist_ok=True)
 
@@ -68,7 +72,7 @@ for config in ConfigScheduler():
         num_diffn_timesteps=200,
         num_particles=4,  # number of diffusion paths
         resampling_interval=config["resampling_interval"],  # diffusion path length
-        lambda_weight=20.0,  # lower this to, say 2.0, to make it more random
+        lambda_weight=config["lambda_weight"],  # lower this to, say 2.0, to make it more random
         potential_type="vanilla",  # "diff" or "max" or "vanilla"
         fk_sigma_threshold=config["fk_sigma_threshold"],
         num_trunk_samples=1,
@@ -81,7 +85,7 @@ for config in ConfigScheduler():
         # rmsd_strength=float(sys.argv[3]),  # from 0 to 1, how strong the RMSD force is
         protein_lr_max=config["protein_lr_max"],
         ligand_lr_max=config["ligand_lr_max"],
-        save_intermediate=True,
+        # save_intermediate=True,
     )
 
 cif_paths = candidates.cif_paths
