@@ -56,12 +56,16 @@ class ConfigScheduler:
         for config in self.configs:
             yield config
 
+    @staticmethod
+    def param_dict_format(config):
+        return f"{config['protein_lr_max']}_{config['ligand_lr_max']}_{config['resampling_interval']}_{config['fk_sigma_threshold']}_{config['rmsd_sigma_threshold']}_{config['lambda_weight']}"
+
 # FKS version: Score=0.9383
 # if you want to use ft steering:
 from fksfold.config import update_global_config
 for config in ConfigScheduler():
     update_global_config(**config)
-    output_dir = tmp_dir / f"outputs_{config['protein_lr_max']}_{config['ligand_lr_max']}_{config['resampling_interval']}_{config['fk_sigma_threshold']}"
+    output_dir = tmp_dir / f"outputs_{ConfigScheduler.param_dict_format(config)}"
     os.makedirs(output_dir, exist_ok=True)
 
     candidates = run_inference(
