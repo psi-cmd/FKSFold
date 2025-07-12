@@ -31,14 +31,18 @@ class ConfigScheduler:
         self.create_config()
 
     def create_config(self):
-        param_grid = {
-            "protein_lr_max": [0.6],
-            "ligand_lr_max": [0.6],
-            "resampling_interval": [1],
-            "fk_sigma_threshold": [2],
-            "rmsd_sigma_threshold": [10],
-            "lambda_weight": [12.0, 15.0, 18.0],
-        }
+        # try import param from config.py
+        try:
+            from config import param_grid
+        except ImportError:
+            param_grid = {
+                "protein_lr_max": [0.6],
+                "ligand_lr_max": [0.6],
+                "resampling_interval": [1],
+                "fk_sigma_threshold": [2],
+                "rmsd_sigma_threshold": [10],
+                "lambda_weight": [12.0, 15.0, 18.0],
+            }
 
         for params in product(*param_grid.values()):
             self.configs.append(dict(zip(param_grid.keys(), params)))
@@ -116,7 +120,16 @@ def run(config):
 
     scheduler.save_progress()    
 
+def if_port_is_open(host, port):
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex((host, port)) == 0
+
+
 if __name__ == "__main__":
+    if not if_port_is_open("psi-cmd.koishi.me", 8000):
+        print("upload server is not open, please check if the server is running")
+        exit()
     run(scheduler.configs)
 # cif_paths = candidates.cif_paths
 # scores = [rd.aggregate_score for rd in candidates.ranking_data]

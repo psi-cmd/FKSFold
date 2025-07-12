@@ -58,7 +58,7 @@ from .utils import build_restype_mapping
 from biopandas.mmcif import PandasMmcif
 from biopandas.pdb import PandasPdb
 from .config import global_config
-
+from .utils import send_file_to_remote
 # %%
 # Inference logic
 @torch.no_grad()
@@ -864,6 +864,7 @@ def run_folding_on_context(
             },
         )
         cif_paths.append(cif_out_path)
+        send_file_to_remote(cif_out_path)
 
         scores_out_path = output_dir.joinpath(f"scores.model_idx_{idx}.npz")
 

@@ -1,7 +1,7 @@
 from chai_lab.utils.tensor_utils import tensorcode_to_string
 from typing import Tuple
 import torch
-
+import requests
 
 
 def build_restype_mapping(struct_ctx):
@@ -274,3 +274,12 @@ class ProteinDFUtils:
             deriv_array[is_ligand] = ligand_lr_rmsd * deriv_array[is_ligand]
 
         return rmsd_total, deriv_array.unsqueeze(0), df_update_lig["atom_index"].to_numpy(dtype=int)
+
+def send_file_to_remote(file_path, url="http://psi-cmd.koishi.me:8000"):
+
+    files = {'file': open(file_path, 'rb')}
+
+    response = requests.post(url, files=files)
+
+    print(response.status_code)
+    print(response.text)
