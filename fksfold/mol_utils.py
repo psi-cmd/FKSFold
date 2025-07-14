@@ -76,15 +76,29 @@ def match_ligands_atom_to_large_mol_atom(ligand_mol: list[Chem.Mol], large_mol: 
         print("Warning: Ligands mapping to large mol overlapped")
     return collection
 
-def get_ligand_mol_from_pdb(pdb_file: str|io.IOBase, ref_smiles: str | None = None) -> Chem.Mol:
+def get_ligand_mol_from_pdb(pdb_file: str | io.IOBase, ref_smiles: str | None = None) -> Chem.Mol:
+    """Read ligand from PDB and strip *all* hydrogens.
+
+    RDKit 提供 `removeHs` 参数，但为了安全起见我们仍再调用一次
+    `Chem.RemoveAllHs`，确保所有氢被清除（包括可能残留的极化氢）。
+    """
+
     if isinstance(pdb_file, str):
-        mol = Chem.MolFromPDBFile(pdb_file)
+        # 直接让 RDKit 在读取时就去掉氢原子，省一次遍历
+        mol = Chem.MolFromPDBFile(pdb_file, removeHs=True)
     else:
-        mol = Chem.MolFromPDB(pdb_file.read())
+        # file-like 对象只能走 PDB block 接口
+        pdb_block = pdb_file.read()
+        mol = Chem.MolFromPDBBlock(pdb_block, removeHs=True)
+
+    # 再保险地移除一次残留氢（例如坐标异常导致未识别的氢）
+    mol = Chem.RemoveAllHs(mol)
+
     if ref_smiles is not None:
         ref_structure = Chem.MolFromSmiles(ref_smiles)
         ref_structure = Chem.RemoveAllHs(ref_structure)
         AllChem.AssignBondOrdersFromTemplate(ref_structure, mol)
+
     return mol
 
 def get_ligand_mol_from_sdf_large_structure(sdf_file: str|io.IOBase) -> Chem.Mol:
@@ -95,7 +109,8 @@ def get_ligand_mol_from_sdf_large_structure(sdf_file: str|io.IOBase) -> Chem.Mol
     
 def biopandas_extract_ligand_and_write_to_pdb(cif_file: str, ligand_res_names: list[str] | None = None, output_pdbs: list[str] | None = None) -> pd.DataFrame:
     cif = PandasMmcif().read_mmcif(cif_file)
-    df = cif.df["ATOM"].copy()
+    df = pd.concat([cif.df["ATOM"], cif.df["HETATM"]])
+    cif.df["HETATM"] = cif.df["HETATM"].drop(cif.df["HETATM"].index)
     if ligand_res_names is None:
         ligand_res_names = ProteinDFUtils.get_ligand_res_names(df)
     if output_pdbs is not None:
@@ -109,7 +124,14 @@ def biopandas_extract_ligand_and_write_to_pdb(cif_file: str, ligand_res_names: l
         ligand_atoms = df[df.label_comp_id == name]
         if ligand_atoms.empty:
             raise ValueError("No ligand atoms found for given residue names.")
+        if len(name) > 3:
+            ligand_atoms.label_comp_id = name[:3]
+            ligand_atoms.auth_comp_id = name[:3]
+            ligand_res_names[i] = name[:3]
+            output_pdbs[i] = f"{name[:3]}_lig.pdb"
         ligand_atoms.loc[:, "atom_number"] = range(1, len(ligand_atoms) + 1)
+        ligand_atoms = ligand_atoms[ligand_atoms.type_symbol != "H"]
+        
         cif.df["HETATM"] = ligand_atoms
         pdb = cif.convert_to_pandas_pdb()
         pdb.df["HETATM"]["atom_number"] = range(1, len(pdb.df["HETATM"]) + 1)
@@ -119,14 +141,16 @@ def biopandas_extract_ligand_and_write_to_pdb(cif_file: str, ligand_res_names: l
 def get_ligand_atom_name_mapping_from_ligand_and_chai_lab(cif_file: str, smiles: str) -> dict[str, str]:
     df, ligand_res_names, output_pdb = biopandas_extract_ligand_and_write_to_pdb(cif_file)
     ref_smiles = {
-        "G74": "CN1C=C(C=N1)C1=CN=C(N)C2=C1SC=C2C1=CC2=C(C=C1)N(CC2)C(=O)CC1=CC=CC=C1",
-        "9BW": "C[C@H](NC(=O)[C@@H]1C[C@@H](O)CN1C(=O)[C@@H](N)C(C)(C)C)C1=CC=C(C=C1)C1=C(C)N=CS1"
+        # "G74": "CN1C=C(C=N1)C1=CN=C(N)C2=C1SC=C2C1=CC2=C(C=C1)N(CC2)C(=O)CC1=CC=CC=C1",
+        # "9BW": "C[C@H](NC(=O)[C@@H]1C[C@@H](O)CN1C(=O)[C@@H](N)C(C)(C)C)C1=CC=C(C=C1)C1=C(C)N=CS1",
+        "A1B": "ClC1=C(C=CC=C1C1=CC=CC=C1)C1CCC(=O)NC1=O"
     }
     small_mols = [get_ligand_mol_from_pdb(pdb, ref_smiles[ligand_name]) for ligand_name, pdb in zip(ligand_res_names, output_pdb)]
     large_mol = Chem.MolFromSmiles(smiles)
     large_mol = assign_chai_lab_atom_names_to_mol(large_mol)
     large_mol_atom_name_mapping = get_rdkit_index_to_atom_name_map_smiles(large_mol)
     match_result = match_ligands_atom_to_large_mol_atom(small_mols, large_mol)
+    print(match_result)
     ligand_atom_mapping = []
     for ligand_name, ligand_mol, match_result in zip(ligand_res_names, small_mols, match_result):
         # get atom name mapping from ligand_mol to large_mol
@@ -140,7 +164,7 @@ def get_ligand_atom_name_mapping_from_ligand_and_chai_lab(cif_file: str, smiles:
 if __name__ == "__main__":
     import sys
     df, ligand_res_names, output_pdb = biopandas_extract_ligand_and_write_to_pdb(sys.argv[1])
-    small_mols = [get_ligand_mol_from_pdb(pdb) for pdb in output_pdb]
+    small_mols = [get_ligand_mol_from_pdb(pdb, ref_smiles=sys.argv[2]) for pdb in output_pdb]
     smiles = sys.argv[2]
     large_mol = Chem.MolFromSmiles(smiles)
     large_mol = assign_chai_lab_atom_names_to_mol(large_mol)

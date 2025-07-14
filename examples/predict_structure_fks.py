@@ -27,6 +27,7 @@ logging.basicConfig(level=logging.INFO)  # control verbosity
 class ConfigScheduler:
     def __init__(self):
         self.configs = []
+        self.param_grid = {}
 
         self.create_config()
 
@@ -34,27 +35,28 @@ class ConfigScheduler:
         # try import param from config.py
         try:
             from config import param_grid
+            self.param_grid = param_grid
         except ImportError:
-            param_grid = {
+            self.param_grid = {
                 "protein_lr_max": [0.6],
-                "ligand_lr_max": [0.6],
-                "resampling_interval": [1],
-                "fk_sigma_threshold": [2],
-                "rmsd_sigma_threshold": [10],
-                "lambda_weight": [12.0, 15.0, 18.0],
+                "ligand_lr_max": [0],
+                "resampling_interval": [5],
+                "fk_sigma_threshold": [0],
+                "rmsd_sigma_threshold": [1, 2, 4, 6, 8],
+                "lambda_weight": [10.0],
+                "ita": [0.15, 0.17, 0.19, 0.21, 0.23, 0.25],
             }
 
-        for params in product(*param_grid.values()):
-            self.configs.append(dict(zip(param_grid.keys(), params)))
+        for params in product(*self.param_grid.values()):
+            self.configs.append(dict(zip(self.param_grid.keys(), params)))
 
 
     def __iter__(self):
         for config in self.configs:
             yield config
 
-    @staticmethod
-    def param_dict_format(config):
-        return "_".join([f"{v}" for k, v in config.items()])
+    def param_dict_format(self, config):
+        return "_".join([f"{v}" for k, v in config.items() if k in self.param_grid.keys()])
 
     def save_progress(self):
         # multiprocess safe
@@ -74,7 +76,7 @@ if os.path.exists("progress.pkl"):
     scheduler.load_progress()
 # FKS version: Score=0.9383
 # if you want to use ft steering:
-
+print(scheduler.param_grid)
 @gpu_map
 def run(config):
     from fksfold.config import update_global_config
@@ -91,7 +93,7 @@ def run(config):
         fasta_path.write_text(fasta_context)
 
     update_global_config(**config)
-    output_dir = tmp_dir / f"outputs_{ConfigScheduler.param_dict_format(config)}"
+    output_dir = tmp_dir / f"outputs_{scheduler.param_dict_format(config)}"
     os.makedirs(output_dir, exist_ok=True)
 
     candidates = run_inference(
@@ -100,13 +102,13 @@ def run(config):
         # constraint_path="./path_to_contact.restraints",
         num_trunk_recycles=3,
         num_diffn_timesteps=200,
-        num_particles=4,  # number of diffusion paths
+        num_particles=1,  # number of diffusion paths
         resampling_interval=config["resampling_interval"],  # diffusion path length
         lambda_weight=config["lambda_weight"],  # lower this to, say 2.0, to make it more random
         potential_type="vanilla",  # "diff" or "max" or "vanilla"
         fk_sigma_threshold=config["fk_sigma_threshold"],
         num_trunk_samples=1,
-        seed=42,
+        seed=None,
         device="cuda:0",
         use_esm_embeddings=True,
         low_memory=False,
@@ -127,9 +129,9 @@ def if_port_is_open(host, port):
 
 
 if __name__ == "__main__":
-    if not if_port_is_open("psi-cmd.koishi.me", 8000):
-        print("upload server is not open, please check if the server is running")
-        exit()
+    # if not if_port_is_open("psi-cmd.koishi.me", 8000):
+    #     print("upload server is not open, please check if the server is running")
+    #     exit()
     run(scheduler.configs)
 # cif_paths = candidates.cif_paths
 # scores = [rd.aggregate_score for rd in candidates.ranking_data]

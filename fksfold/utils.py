@@ -2,7 +2,14 @@ from chai_lab.utils.tensor_utils import tensorcode_to_string
 from typing import Tuple
 import torch
 import requests
+from Bio import pairwise2
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
+from .config import global_config
+
+
+INVALID_LIGAND_RES_NAMES = ["HOH", "ZN", "NA", "CL", "K", "MG", "CA", "MN", "FE", "CU"]
 
 def build_restype_mapping(struct_ctx):
     """
@@ -52,7 +59,8 @@ class ProteinDFUtils:
     
     @staticmethod
     def get_ligand_res_names(cif_df):
-        return cif_df[~cif_df.label_comp_id.isin(three2one.keys())].label_comp_id.unique().tolist()
+        residue_name_candidates = cif_df[~cif_df.label_comp_id.isin(three2one.keys())].label_comp_id.unique().tolist()
+        return [name for name in residue_name_candidates if name not in INVALID_LIGAND_RES_NAMES]
 
     @staticmethod
     def get_chain_atoms(chain_id, cif_df):
@@ -70,11 +78,13 @@ class ProteinDFUtils:
         matched_chains = []
         for chain_id_1 in ProteinDFUtils.get_protein_chain_ids(df1):
             diff_result = [
-                (chain_id_2, difflib.SequenceMatcher(None, ProteinDFUtils.get_chain_res_seqs(chain_id_1, df1), ProteinDFUtils.get_chain_res_seqs(chain_id_2, df2)).ratio())
+                (chain_id_2, pairwise2.align.globalxx("".join(ProteinDFUtils.get_chain_res_seqs(chain_id_1, df1)), 
+                                                      "".join(ProteinDFUtils.get_chain_res_seqs(chain_id_2, df2)))[0].score)
                 for chain_id_2 in ProteinDFUtils.get_protein_chain_ids(df2)
             ]
             diff_result.sort(key=lambda x: x[1], reverse=True)
             matched_chains.append((chain_id_1, diff_result[0][0]))
+        print(f"matched chains: {matched_chains}")
         return matched_chains
     
     @staticmethod
@@ -82,7 +92,7 @@ class ProteinDFUtils:
         pass
     
     @staticmethod
-    def _kabsch_rmsd_and_derivative(coords1: np.ndarray, coords2: np.ndarray) -> Tuple[float, np.ndarray]:
+    def _kabsch_square_error_and_derivative(coords1: np.ndarray, coords2: np.ndarray) -> Tuple[float, np.ndarray]:
         """Compute RMSD after optimal superposition AND its gradient w.r.t coords1 (moving set)."""
         assert coords1.shape == coords2.shape and coords1.shape[0] >= 3, "Need at least 3 matched atoms"
 
@@ -93,24 +103,33 @@ class ProteinDFUtils:
         # Kabsch alignment (rotate Q onto P)
         H = P.T @ Q
         U, _, Vt = np.linalg.svd(H)
-        R = Vt.T @ U.T
-        if np.linalg.det(R) < 0:
-            Vt[-1, :] *= -1
-            R = Vt.T @ U.T
+        d = np.sign(np.linalg.det(U) * np.linalg.det(Vt))
+        R = Vt.T @ np.diag([1, 1, d]) @ U.T
 
         Q_rot = (R @ Q.T).T
 
+        ## 
+        # fig = plt.figure()
+        # ax = fig.add_subplot(projection='3d')
+        # ax.scatter(P[:, 0], P[:, 1], P[:, 2], c='r', label='P', s=1)
+        # ax.scatter(Q_rot[:, 0], Q_rot[:, 1], Q_rot[:, 2], c='b', label='Q_rot', s=1)
+        # ax.legend()
+        # plt.show()
+        ##
+
         diff = P - Q_rot                        # shape (N,3)
+        dist = np.linalg.norm(diff, axis=1)
+        # plt.hist(dist, bins=50); plt.show()
         N    = coords1.shape[0]
-        rmsd = np.sqrt((diff ** 2).sum() / N)
+        square_error = (dist ** 2).sum() 
 
         # Gradient w.r.t P (coords1):  diff / (N * rmsd)
-        grad_P = diff / (N * rmsd + 1e-8)
+        grad_P = 2 * diff
 
         # Centering: P = coords1 - mean_P  => d/dcoords1 = grad_P - mean(grad_P)
         grad_coords1 = grad_P - grad_P.mean(axis=0, keepdims=True)
 
-        return rmsd, grad_coords1
+        return square_error, grad_coords1
     
     @staticmethod
     def update_ligand_atom_name(
@@ -149,7 +168,7 @@ class ProteinDFUtils:
         return df_with_ligand
 
     @staticmethod
-    def calculate_rmsd_between_matched_chains_and_derivative(
+    def calculate_square_error_between_matched_chains_and_derivative(
         df_update,
         df_ref,
         total_atoms: int,
@@ -249,7 +268,7 @@ class ProteinDFUtils:
         coords1_all = np.concatenate(coords1_list, axis=0)
         coords2_all = np.concatenate(coords2_list, axis=0)
 
-        rmsd_total, grad_all = ProteinDFUtils._kabsch_rmsd_and_derivative(coords1_all, coords2_all)
+        se_total, grad_all = ProteinDFUtils._kabsch_square_error_and_derivative(coords1_all, coords2_all)
 
         # map gradients back
         deriv_array[np.array(index_list, dtype=int)] = grad_all.astype(np.float32)
@@ -259,21 +278,24 @@ class ProteinDFUtils:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         deriv_array = deriv_array.to(device).float()
 
-        if sigma_next < fk_sigma_threshold:
-            progress = (fk_sigma_threshold - sigma_next) / fk_sigma_threshold
-            protein_lr_rmsd  = kwargs["protein_lr_max"] * progress.clamp(0,1)     # lr_max 先设 0.5
-            ligand_lr_rmsd  = kwargs["ligand_lr_max"] * progress.clamp(0,1)     # lr_max 先设 0.5
-            n_matched_atoms = (deriv_array.norm(dim=1) > 0).sum().item()
-            protein_lr_rmsd *= n_matched_atoms
-            ligand_lr_rmsd *= n_matched_atoms
+        if sigma_next < global_config["rmsd_sigma_threshold"]:
+            # progress = (fk_sigma_threshold - sigma_next) / fk_sigma_threshold
+            # protein_lr_rmsd  = kwargs["protein_lr_max"] * progress.clamp(0,1)     # lr_max 先设 0.5
+            # ligand_lr_rmsd  = kwargs["ligand_lr_max"] * progress.clamp(0,1)     # lr_max 先设 0.5
+            # n_matched_atoms = (deriv_array.norm(dim=1) > 0).sum().item()
+            # protein_lr_rmsd *= n_matched_atoms
+            # ligand_lr_rmsd *= n_matched_atoms
 
             ligand_indices = df_update_lig["atom_index"].to_numpy(dtype=int)
             all_indices = np.arange(deriv_array.shape[0])
             is_ligand = np.isin(all_indices, ligand_indices)  # shape: (N_atoms,)
-            deriv_array[~is_ligand] = protein_lr_rmsd * deriv_array[~is_ligand]
-            deriv_array[is_ligand] = ligand_lr_rmsd * deriv_array[is_ligand]
+            # deriv_array[~is_ligand] = protein_lr_rmsd * deriv_array[~is_ligand]
+            # deriv_array[is_ligand] = ligand_lr_rmsd * deriv_array[is_ligand]
+            deriv_array[~is_ligand] = global_config["protein_lr_max"] * deriv_array[~is_ligand]
+            deriv_array[is_ligand] = global_config["ligand_lr_max"] * deriv_array[is_ligand]
+            # deriv_array *= n_matched_atoms
 
-        return rmsd_total, deriv_array.unsqueeze(0), df_update_lig["atom_index"].to_numpy(dtype=int)
+        return se_total, deriv_array.unsqueeze(0), df_update_lig["atom_index"].to_numpy(dtype=int)
 
 def send_file_to_remote(file_path, url="http://psi-cmd.koishi.me:8000"):
 
