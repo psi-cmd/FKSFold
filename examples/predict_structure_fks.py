@@ -7,7 +7,7 @@ import uuid
 from itertools import product
 
 import multiprocessing as mp
-from multi_gpu import gpu_map
+from multi_gpu import gpu_map, gpu_map_debug
 
 # add parent directory before path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -38,14 +38,17 @@ class ConfigScheduler:
             self.param_grid = param_grid
         except ImportError:
             self.param_grid = {
-                "protein_lr_max": [0.6],
+                "protein_lr_max": [1],  # not useful, gradient is scaled according to diffusion output
                 "ligand_lr_max": [0],
                 "resampling_interval": [5],
                 "fk_sigma_threshold": [0],
-                "rmsd_sigma_threshold": [1, 2, 4, 6, 8],
+                "rmsd_sigma_threshold": [2, 3, 4, 5],
                 "lambda_weight": [10.0],
-                "ita": [0.15, 0.17, 0.19, 0.21, 0.23, 0.25],
+                "ita": [0.5, 0.7, 0.9, 1, 1.2, 1.4],
+                "rmsd_cutoff": [1, 2, 3, 4, 5],
             }
+
+            self.logging_params = ["rmsd_sigma_threshold", "ita", "rmsd_cutoff"]
 
         for params in product(*self.param_grid.values()):
             self.configs.append(dict(zip(self.param_grid.keys(), params)))
@@ -56,7 +59,7 @@ class ConfigScheduler:
             yield config
 
     def param_dict_format(self, config):
-        return "_".join([f"{v}" for k, v in config.items() if k in self.param_grid.keys()])
+        return "_".join([f"{v}" for k, v in config.items() if k in self.logging_params])
 
     def save_progress(self):
         # multiprocess safe
@@ -72,8 +75,8 @@ class ConfigScheduler:
 
 
 scheduler = ConfigScheduler()
-if os.path.exists("progress.pkl"):
-    scheduler.load_progress()
+# if os.path.exists("progress.pkl"):
+#     scheduler.load_progress()
 # FKS version: Score=0.9383
 # if you want to use ft steering:
 print(scheduler.param_grid)
@@ -101,7 +104,7 @@ def run(config):
         output_dir=output_dir,
         # constraint_path="./path_to_contact.restraints",
         num_trunk_recycles=3,
-        num_diffn_timesteps=200,
+        num_diffn_timesteps=220,
         num_particles=1,  # number of diffusion paths
         resampling_interval=config["resampling_interval"],  # diffusion path length
         lambda_weight=config["lambda_weight"],  # lower this to, say 2.0, to make it more random

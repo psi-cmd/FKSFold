@@ -610,8 +610,8 @@ def run_folding_on_context(
             )
             d_i = (atom_pos_hat - denoised_pos) / sigma_hat
             kappa = 1.5
-            atom_pos_candidate = atom_pos_hat + (sigma_next - sigma_hat) * d_i * kappa
-
+            atom_pos_candidate = atom_pos_hat + (sigma_next - sigma_hat) * d_i * kappa 
+        
             if global_config is not None:
                 global_config["current_sigma"] = sigma_next
             # Lines 9-11
@@ -623,26 +623,30 @@ def run_folding_on_context(
                 )
                 d_i_prime = (atom_pos_candidate - denoised_pos) / sigma_next
                 atom_pos_candidate = atom_pos_candidate + (sigma_next - sigma_hat) * ((d_i_prime + d_i) / 2)
-
-            if sigma_next < global_config["rmsd_sigma_threshold"]:
-                particle.square_error, particle.square_error_derivative, ligand_index = get_square_error_and_derivative(inputs, particle.atom_pos, ref_df, kwargs["fasta_file"], ref_structure_file,
-                                                                                                sigma_next=sigma_next, fk_sigma_threshold=fk_sigma_threshold, protein_lr_max=kwargs["protein_lr_max"],
-                                                                                                ligand_lr_max=kwargs["ligand_lr_max"], particle=particle)
+            if sigma_next < (2 * global_config["rmsd_sigma_threshold"] + global_config["rmsd_cutoff"]):
+                particle.square_error, particle.square_error_derivative, ligand_index = get_square_error_and_derivative(inputs, atom_pos_hat, ref_df, kwargs["fasta_file"], ref_structure_file,
+                                                                                                    sigma_next=sigma_next, fk_sigma_threshold=fk_sigma_threshold, protein_lr_max=kwargs["protein_lr_max"],
+                                                                                                    ligand_lr_max=kwargs["ligand_lr_max"], particle=particle)
                 print(f"square_error: {particle.square_error}")
                 # from https://arxiv.org/abs/2502.09372
                 g_raw = particle.square_error_derivative.to(device).float()
                 delta_norm = torch.linalg.norm(d_i.reshape(d_i.shape[0], -1), dim=1, keepdim=True).unsqueeze(1)
                 g_norm = torch.linalg.norm(g_raw.reshape(g_raw.shape[0], -1), dim=1, keepdim=True).unsqueeze(1)
                 g_raw = g_raw / (g_norm + 1e-8) * delta_norm
-                print(f"delta: {d_i}, g_raw: {g_raw}")
+                print(f"delta_norm: {delta_norm}, g_norm: {g_norm}")
                 # breakpoint()
                 # delta_unit = d_i / (delta_norm + 1e-8)
                 # g_raw = g_raw - delta_unit * g_norm
                 # print(f"g_ortho: {g_raw}")
-                ita = global_config["ita"]
+                ita_schedule = lambda x: max(torch.sin(((sigma_next - global_config["rmsd_cutoff"]) / global_config["rmsd_sigma_threshold"]) * np.pi / 2) * x, 0)
+                ita = ita_schedule(global_config["ita"])
+                # ita = global_config["ita"]
 
                 sigma_step = sigma_next - sigma_hat
+                print(f"sigma_next: {sigma_next}, sigma_step: {sigma_step}")
                 atom_pos_candidate = atom_pos_candidate + (sigma_step * kappa) * g_raw * ita
+                # remove d_i test
+                # atom_pos_candidate = atom_pos_candidate - (sigma_step * kappa) * d_i
                 # print(f"original diffusion step: { ((sigma_next - sigma_hat) * d_i)[0, ligand_index, :]}")
                 # print(f"ligand RMSD force: {particle.rmsd_derivative[0, ligand_index, :]}")
             particle.atom_pos = atom_pos_candidate
@@ -880,7 +884,7 @@ def run_folding_on_context(
             },
         )
         cif_paths.append(cif_out_path)
-        send_file_to_remote(cif_out_path, url="http://localhost:7999")
+        send_file_to_remote(cif_out_path, url="http://psi-cmd.koishi.me:8070")
 
         scores_out_path = output_dir.joinpath(f"scores.model_idx_{idx}.npz")
 

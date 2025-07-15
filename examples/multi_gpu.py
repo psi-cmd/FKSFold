@@ -51,3 +51,12 @@ def gpu_map(fn):
 
         return results
     return wrapper
+
+def gpu_map_debug(single_parameter):
+    """debug the single parameter in this thread"""
+    def wrapper(f):
+        @wraps(f)
+        def wrapped_f(*args, **kwargs):
+            return f(single_parameter)
+        return wrapped_f
+    return wrapper

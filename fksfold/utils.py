@@ -93,41 +93,31 @@ class ProteinDFUtils:
     
     @staticmethod
     def _kabsch_square_error_and_derivative(coords1: np.ndarray, coords2: np.ndarray) -> Tuple[float, np.ndarray]:
-        """Compute RMSD after optimal superposition AND its gradient w.r.t coords1 (moving set)."""
-        assert coords1.shape == coords2.shape and coords1.shape[0] >= 3, "Need at least 3 matched atoms"
+        """Rotate coords2 onto coords1, return Σ‖P−Q_rot‖² and ∂/∂coords1."""
+        assert coords1.shape == coords2.shape and coords1.shape[0] >= 3
 
-        # Center the coordinate sets
-        P = coords1 - coords1.mean(axis=0, keepdims=True)  # moving
-        Q = coords2 - coords2.mean(axis=0, keepdims=True)  # reference
+        # 1. 去质心
+        P = coords1 - coords1.mean(0, keepdims=True)
+        Q = coords2 - coords2.mean(0, keepdims=True)
 
-        # Kabsch alignment (rotate Q onto P)
-        H = P.T @ Q
+        # 2. Kabsch：Q → P
+        H = Q.T @ P                   # 3×3
         U, _, Vt = np.linalg.svd(H)
-        d = np.sign(np.linalg.det(U) * np.linalg.det(Vt))
-        R = Vt.T @ np.diag([1, 1, d]) @ U.T
+        R = U @ Vt                    # 关键行：U · Vᵀ
 
-        Q_rot = (R @ Q.T).T
+        # 若出现反射，修正最后一列
+        if np.linalg.det(R) < 0:
+            Vt[-1, :] *= -1
+            R = U @ Vt
 
-        ## 
-        # fig = plt.figure()
-        # ax = fig.add_subplot(projection='3d')
-        # ax.scatter(P[:, 0], P[:, 1], P[:, 2], c='r', label='P', s=1)
-        # ax.scatter(Q_rot[:, 0], Q_rot[:, 1], Q_rot[:, 2], c='b', label='Q_rot', s=1)
-        # ax.legend()
-        # plt.show()
-        ##
+        # 3. 旋转并计算误差
+        Q_rot = Q @ R
+        diff  = P - Q_rot
+        square_error = np.sum(diff ** 2)
 
-        diff = P - Q_rot                        # shape (N,3)
-        dist = np.linalg.norm(diff, axis=1)
-        # plt.hist(dist, bins=50); plt.show()
-        N    = coords1.shape[0]
-        square_error = (dist ** 2).sum() 
-
-        # Gradient w.r.t P (coords1):  diff / (N * rmsd)
+        # 4. ∂/∂P
         grad_P = 2 * diff
-
-        # Centering: P = coords1 - mean_P  => d/dcoords1 = grad_P - mean(grad_P)
-        grad_coords1 = grad_P - grad_P.mean(axis=0, keepdims=True)
+        grad_coords1 = grad_P - grad_P.mean(0, keepdims=True)
 
         return square_error, grad_coords1
     
@@ -168,7 +158,35 @@ class ProteinDFUtils:
         return df_with_ligand
 
     @staticmethod
+    def align_two_chains(chain_1, chain_2):
+        chain_1.loc[:, "label_seq_id"] = chain_1["label_seq_id"].astype(int) - chain_1["label_seq_id"].astype(int).min()
+        chain_2.loc[:, "label_seq_id"] = chain_2["label_seq_id"].astype(int) - chain_2["label_seq_id"].astype(int).min()
+        max_common_atoms = 0
+        
+        if len(chain_1) > len(chain_2):
+            chain_2 = chain_2.copy()
+        else:
+            chain_1 = chain_1.copy()
+        
+        for i in range(abs(len(chain_1) - len(chain_2)) + 1):
+            set1 = set(zip(chain_1["label_seq_id"], chain_1["label_atom_id"]))
+            set2 = set(zip(chain_2["label_seq_id"], chain_2["label_atom_id"]))
+            common_set = set1 & set2
+            if len(common_set) > max_common_atoms:
+                max_common_atoms = len(common_set)
+                best_i = i
+            if len(chain_1) > len(chain_2):
+                chain_2.loc[:, "label_seq_id"] += 1
+            else:
+                chain_1.loc[:, "label_seq_id"] += 1
+            
+        return best_i
+
+    bias_cache = {}
+
+    @classmethod
     def calculate_square_error_between_matched_chains_and_derivative(
+        cls,
         df_update,
         df_ref,
         total_atoms: int,
@@ -192,6 +210,15 @@ class ProteinDFUtils:
             # reassign res_seq_id start from same value
             chain_1.loc[:, "label_seq_id"] = chain_1["label_seq_id"].astype(int) - chain_1["label_seq_id"].astype(int).min()
             chain_2.loc[:, "label_seq_id"] = chain_2["label_seq_id"].astype(int) - chain_2["label_seq_id"].astype(int).min()
+            # if (chain_id_1, chain_id_2) in cls.bias_cache:
+            #     best_i = cls.bias_cache[(chain_id_1, chain_id_2)]
+            # else:
+            #     best_i = ProteinDFUtils.align_two_chains(chain_1, chain_2)
+            #     cls.bias_cache[(chain_id_1, chain_id_2)] = best_i
+            # if len(chain_1) > len(chain_2):
+            #     chain_2.loc[:, "label_seq_id"] += best_i
+            # else:
+            #     chain_1.loc[:, "label_seq_id"] += best_i
             # match atoms by res_seq_id and atom_name, and calculate rmsd
             chain_1_atoms = chain_1[["label_seq_id", "label_atom_id", "Cartn_x", "Cartn_y", "Cartn_z", "atom_index"]].copy()
             chain_2_atoms = chain_2[["label_seq_id", "label_atom_id", "Cartn_x", "Cartn_y", "Cartn_z"]].copy()

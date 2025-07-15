@@ -97,7 +97,10 @@ def get_ligand_mol_from_pdb(pdb_file: str | io.IOBase, ref_smiles: str | None = 
     if ref_smiles is not None:
         ref_structure = Chem.MolFromSmiles(ref_smiles)
         ref_structure = Chem.RemoveAllHs(ref_structure)
-        AllChem.AssignBondOrdersFromTemplate(ref_structure, mol)
+        try:
+            AllChem.AssignBondOrdersFromTemplate(ref_structure, mol)
+        except ValueError:
+            print("Warning: Failed to assign bond orders, using default bond orders")
 
     return mol
 
@@ -143,7 +146,8 @@ def get_ligand_atom_name_mapping_from_ligand_and_chai_lab(cif_file: str, smiles:
     ref_smiles = {
         # "G74": "CN1C=C(C=N1)C1=CN=C(N)C2=C1SC=C2C1=CC2=C(C=C1)N(CC2)C(=O)CC1=CC=CC=C1",
         # "9BW": "C[C@H](NC(=O)[C@@H]1C[C@@H](O)CN1C(=O)[C@@H](N)C(C)(C)C)C1=CC=C(C=C1)C1=C(C)N=CS1",
-        "A1B": "ClC1=C(C=CC=C1C1=CC=CC=C1)C1CCC(=O)NC1=O"
+        "A1B": "ClC1=C(C=CC=C1C1=CC=CC=C1)C1CCC(=O)NC1=O",
+        "LVY": "C1CC(=O)NC(=O)C1N2CC3=C(C2=O)C=CC=C3N"
     }
     small_mols = [get_ligand_mol_from_pdb(pdb, ref_smiles[ligand_name]) for ligand_name, pdb in zip(ligand_res_names, output_pdb)]
     large_mol = Chem.MolFromSmiles(smiles)
