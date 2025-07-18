@@ -5,6 +5,8 @@ import sys
 import os
 import uuid
 from itertools import product
+import subprocess
+import re
 
 import multiprocessing as mp
 from multi_gpu import gpu_map, gpu_map_debug
@@ -83,19 +85,16 @@ scheduler = ConfigScheduler()
 print(scheduler.param_grid)
 
 import ray
-ray.init("ray://localhost:10001", runtime_env={
-    "working_dir": "./", 
-    "py_modules": ["../"], 
-    "excludes": ["*result*/", "*.pse", "paper/*"],
-    "env_vars": {
-        # "CHAI_DOWNLOADS_DIR": "/FKSFold-self/"
-        "CHAI_DOWNLOADS_DIR": "/staging/lliu466/downloads"
-    }
-    })
+# Local Ray runtime with Tune for hyper-parameter optimisation
+from ray import tune
+from ray.tune.search.optuna import OptunaSearch
+from ray.tune.schedulers import ASHAScheduler
+
+# Use local Ray; ignore repeated inits when notebook re-runs
+ray.init(ignore_reinit_error=True)
 
 
-@ray.remote(num_gpus=1)
-# @gpu_map_debug(scheduler.configs[0])
+# The core folding routine (was remote before, now runs locally and returns a score)
 def run(config, fasta_file, cif_file):
     from fksfold.config import update_global_config
 
@@ -136,7 +135,45 @@ def run(config, fasta_file, cif_file):
         # save_intermediate=True,
     )
 
-    scheduler.save_progress()    
+    # save optimisation progress and report score
+    scheduler.save_progress()
+    score = calculate_rmsd_with_usalign(candidates.cif_paths[0], cif_file)
+    return score
+
+def calculate_rmsd_with_usalign(cif_path, ref_cif_path):
+    # get output from subprocess
+    output = subprocess.run(["USalign", cif_path, ref_cif_path], capture_output=True, text=True)
+    # extract rmsd from output
+    rmsd = re.search(r"RMSD=\s*(\d*?\.\d*)", output.stdout)
+    return float(rmsd.group(1))
+
+# -----------------------------------------------------------
+# Ray Tune objective function
+# -----------------------------------------------------------
+
+def run_trial(trial_config):
+    """Objective for Ray Tune hyper-parameter optimisation."""
+    from fksfold.config import update_global_config
+
+    # Constant parameters that are not part of the search space
+    base_cfg = {
+        "protein_lr_max": 1,
+        "ligand_lr_max": 0,
+        "resampling_interval": 5,
+        "fk_sigma_threshold": 0,
+        "lambda_weight": 10.0,
+    }
+
+    cfg = {**base_cfg, **trial_config}
+    update_global_config(**cfg)
+
+    proj_dir = Path(__file__).resolve().parent.parent
+    fasta_file = proj_dir / "examples" / "glue_example.fasta"
+    cif_file = proj_dir / "examples" / "9nfr_clean.cif"
+    score = run(cfg, str(fasta_file), str(cif_file))
+    print(f"Score: {score}")
+    tune.report({"score": score})
+
 
 def if_port_is_open(host, port):
     import socket
@@ -147,9 +184,28 @@ def if_port_is_open(host, port):
 if __name__ == "__main__":
     if not if_port_is_open("psi-cmd.koishi.me", 8070):
         print("upload server is not open, please check if the server is running")
-        exit()
-    # run(scheduler.configs)
-    ray.get([run.remote(config, "./glue_example.fasta", "./9nfr_clean.cif") for config in scheduler.configs])
+
+    # Search space for the three hyper-parameters
+    search_space = {
+        "rmsd_sigma_threshold": tune.choice([60, 80, 100]),
+        "ita": tune.choice([0.7]),
+        "rmsd_cutoff": tune.choice([20, 40]),
+    }
+
+    algo = OptunaSearch(metric="score", mode="min")
+    scheduler_asha = ASHAScheduler(metric="score", mode="min")
+
+    analysis = tune.run(
+        run_trial,
+        name="local_hyperparam_search",
+        search_alg=algo,
+        scheduler=scheduler_asha,
+        config=search_space,
+        resources_per_trial={"cpu": 4, "gpu": 1},
+    )
+
+    print("Best hyper-parameters found:", analysis.best_config)
+
 # cif_paths = candidates.cif_paths
 # scores = [rd.aggregate_score for rd in candidates.ranking_data]
 
