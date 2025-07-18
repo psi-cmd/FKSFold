@@ -187,9 +187,9 @@ if __name__ == "__main__":
 
     # Search space for the three hyper-parameters
     search_space = {
-        "rmsd_sigma_threshold": tune.choice([60, 80, 100]),
-        "ita": tune.choice([0.7]),
-        "rmsd_cutoff": tune.choice([20, 40]),
+        "rmsd_sigma_threshold": tune.loguniform(1, 1000),
+        "ita": tune.uniform(0.1, 2),
+        "rmsd_cutoff": tune.loguniform(1, 300),
     }
 
     algo = OptunaSearch(metric="score", mode="min")
