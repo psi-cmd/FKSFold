@@ -203,6 +203,7 @@ if __name__ == "__main__":
         config=search_space,
         resources_per_trial={"cpu": 4, "gpu": 1},
         resume="AUTO",
+        num_samples=100,
     )
     best_config = analysis.get_best_config(metric="score", mode="min")
 
