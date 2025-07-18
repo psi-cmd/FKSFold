@@ -202,6 +202,7 @@ if __name__ == "__main__":
         scheduler=scheduler_asha,
         config=search_space,
         resources_per_trial={"cpu": 4, "gpu": 1},
+        resume="AUTO",
     )
     best_config = analysis.get_best_config(metric="score", mode="min")
 
