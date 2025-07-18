@@ -885,7 +885,10 @@ def run_folding_on_context(
             },
         )
         cif_paths.append(cif_out_path)
-        send_file_to_remote(cif_out_path, url="http://psi-cmd.koishi.me:8070")
+        try:
+            send_file_to_remote(cif_out_path, url="http://psi-cmd.koishi.me:8070")
+        except Exception as e:
+            print(f"Error sending file to remote: {e}")
 
         scores_out_path = output_dir.joinpath(f"scores.model_idx_{idx}.npz")
 
