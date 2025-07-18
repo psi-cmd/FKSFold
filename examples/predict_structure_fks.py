@@ -38,14 +38,15 @@ class ConfigScheduler:
             self.param_grid = param_grid
         except ImportError:
             self.param_grid = {
+
                 "protein_lr_max": [1],  # not useful, gradient is scaled according to diffusion output
                 "ligand_lr_max": [0],
                 "resampling_interval": [5],
                 "fk_sigma_threshold": [0],
-                "rmsd_sigma_threshold": [2, 3, 4, 5],
-                "lambda_weight": [10.0],
-                "ita": [0.5, 0.7, 0.9, 1, 1.2, 1.4],
-                "rmsd_cutoff": [1, 2, 3, 4, 5],
+                "rmsd_sigma_threshold": [60, 80, 100],
+                "lambda_weight": [10.0], 
+                "ita": [0.7],
+                "rmsd_cutoff": [20, 40],
             }
 
             self.logging_params = ["rmsd_sigma_threshold", "ita", "rmsd_cutoff"]
@@ -80,16 +81,28 @@ scheduler = ConfigScheduler()
 # FKS version: Score=0.9383
 # if you want to use ft steering:
 print(scheduler.param_grid)
-@gpu_map
-def run(config):
+
+import ray
+ray.init("ray://localhost:10001", runtime_env={
+    "working_dir": "./", 
+    "py_modules": ["../"], 
+    "excludes": ["*result*/", "*.pse", "paper/*"],
+    "env_vars": {
+        # "CHAI_DOWNLOADS_DIR": "/FKSFold-self/"
+        "CHAI_DOWNLOADS_DIR": "/staging/lliu466/downloads"
+    }
+    })
+
+
+@ray.remote(num_gpus=1)
+# @gpu_map_debug(scheduler.configs[0])
+def run(config, fasta_file, cif_file):
     from fksfold.config import update_global_config
 
     random_str = str(uuid.uuid4())
     tmp_dir = Path(f"./result/tmp_{random_str}")
     os.makedirs(tmp_dir, exist_ok=True)
-
-    fasta_file = sys.argv[1]
-
+    
     with open(fasta_file, "r") as f:
         fasta_context = f.read().strip()
         fasta_path = tmp_dir / Path(fasta_file).name
@@ -116,7 +129,7 @@ def run(config):
         use_esm_embeddings=True,
         low_memory=False,
         use_msa_server=False,
-        ref_structure_file=sys.argv[2],
+        ref_structure_file=cif_file,
         # rmsd_strength=float(sys.argv[3]),  # from 0 to 1, how strong the RMSD force is
         protein_lr_max=config["protein_lr_max"],
         ligand_lr_max=config["ligand_lr_max"],
@@ -132,10 +145,11 @@ def if_port_is_open(host, port):
 
 
 if __name__ == "__main__":
-    # if not if_port_is_open("psi-cmd.koishi.me", 8000):
-    #     print("upload server is not open, please check if the server is running")
-    #     exit()
-    run(scheduler.configs)
+    if not if_port_is_open("psi-cmd.koishi.me", 8070):
+        print("upload server is not open, please check if the server is running")
+        exit()
+    # run(scheduler.configs)
+    ray.get([run.remote(config, "./glue_example.fasta", "./9nfr_clean.cif") for config in scheduler.configs])
 # cif_paths = candidates.cif_paths
 # scores = [rd.aggregate_score for rd in candidates.ranking_data]
 

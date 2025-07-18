@@ -650,6 +650,7 @@ def run_folding_on_context(
                 # print(f"original diffusion step: { ((sigma_next - sigma_hat) * d_i)[0, ligand_index, :]}")
                 # print(f"ligand RMSD force: {particle.rmsd_derivative[0, ligand_index, :]}")
             particle.atom_pos = atom_pos_candidate
+            print(f"sigma_next: {sigma_next}, step_idx: {step_idx}")
 
             if "save_intermediate" in kwargs and kwargs["save_intermediate"]:
                 cif_out_path = output_dir.joinpath(f"pred.model_idx_{step_idx}_particle_{particle_idx}.cif")
