@@ -95,7 +95,7 @@ ray.init(ignore_reinit_error=True)
 
 
 # The core folding routine (was remote before, now runs locally and returns a score)
-def run(config, fasta_file, cif_file):
+def run(config, fasta_file, cif_file, target_file):
     from fksfold.config import update_global_config
 
     random_str = str(uuid.uuid4())
@@ -137,7 +137,7 @@ def run(config, fasta_file, cif_file):
 
     # save optimisation progress and report score
     scheduler.save_progress()
-    score = calculate_rmsd_with_usalign(candidates.cif_paths[0], cif_file)
+    score = calculate_rmsd_with_usalign(candidates.cif_paths[0], target_file)
     return score
 
 def calculate_rmsd_with_usalign(cif_path, ref_cif_path):
@@ -170,7 +170,8 @@ def run_trial(trial_config):
     proj_dir = Path(__file__).resolve().parent.parent
     fasta_file = proj_dir / "examples" / "glue_example.fasta"
     cif_file = proj_dir / "examples" / "state1.cif"
-    score = run(cfg, str(fasta_file), str(cif_file))
+    target_file = proj_dir / "examples" / "9nfr_clean.cif"
+    score = run(cfg, str(fasta_file), str(cif_file), str(target_file))
     print(f"Score: {score}")
     tune.report({"score": score})
 
