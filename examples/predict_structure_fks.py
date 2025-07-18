@@ -203,8 +203,9 @@ if __name__ == "__main__":
         config=search_space,
         resources_per_trial={"cpu": 4, "gpu": 1},
     )
+    best_config = analysis.get_best_config(metric="score", mode="min")
 
-    print("Best hyper-parameters found:", analysis.best_config)
+    print("Best hyper-parameters found:", best_config)
 
 # cif_paths = candidates.cif_paths
 # scores = [rd.aggregate_score for rd in candidates.ranking_data]
