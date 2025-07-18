@@ -169,7 +169,7 @@ def run_trial(trial_config):
 
     proj_dir = Path(__file__).resolve().parent.parent
     fasta_file = proj_dir / "examples" / "glue_example.fasta"
-    cif_file = proj_dir / "examples" / "9nfr_clean.cif"
+    cif_file = proj_dir / "examples" / "state1.cif"
     score = run(cfg, str(fasta_file), str(cif_file))
     print(f"Score: {score}")
     tune.report({"score": score})
