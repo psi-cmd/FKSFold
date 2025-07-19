@@ -89,6 +89,7 @@ import ray
 from ray import tune
 from ray.tune.search.optuna import OptunaSearch
 from ray.tune.schedulers import ASHAScheduler
+import optuna
 
 # Use local Ray; ignore repeated inits when notebook re-runs
 ray.init(ignore_reinit_error=True)
@@ -193,7 +194,9 @@ if __name__ == "__main__":
         "rmsd_cutoff": tune.loguniform(1, 300),
     }
 
-    algo = OptunaSearch(metric="score", mode="min")
+    random_sampler = optuna.samplers.RandomSampler(seed=2025)
+
+    algo = OptunaSearch(metric="score", mode="min", sampler=random_sampler)
     scheduler_asha = ASHAScheduler(metric="score", mode="min")
 
     analysis = tune.run(
@@ -202,7 +205,7 @@ if __name__ == "__main__":
         search_alg=algo,
         scheduler=scheduler_asha,
         config=search_space,
-        resources_per_trial={"cpu": 4, "gpu": 1},
+        resources_per_trial={"cpu": 8, "gpu": 1},
         resume="AUTO",
         num_samples=100,
     )
