@@ -51,7 +51,7 @@ class ConfigScheduler:
                 "rmsd_cutoff": [20, 40],
             }
 
-            self.logging_params = ["rmsd_sigma_threshold", "ita", "rmsd_cutoff"]
+            self.logging_params = ["rmsd_sigma_threshold", "ita", "rmsd_cutoff", "seed"]
 
         for params in product(*self.param_grid.values()):
             self.configs.append(dict(zip(self.param_grid.keys(), params)))
@@ -124,7 +124,7 @@ def run(config, fasta_file, cif_file, target_file):
         potential_type="vanilla",  # "diff" or "max" or "vanilla"
         fk_sigma_threshold=config["fk_sigma_threshold"],
         num_trunk_samples=1,
-        seed=None,
+        seed=config["seed"],
         device="cuda:0",
         use_esm_embeddings=True,
         low_memory=False,
@@ -189,9 +189,10 @@ if __name__ == "__main__":
 
     # Search space for the three hyper-parameters
     search_space = {
-        "rmsd_sigma_threshold": tune.loguniform(1, 1000),
-        "ita": tune.uniform(0.1, 2),
-        "rmsd_cutoff": tune.loguniform(1, 300),
+        "rmsd_sigma_threshold": 51.28504910256902,
+        "ita": 0.8910603983681669,
+        "rmsd_cutoff": 1.0223982331084525,
+        "seed": tune.randint(0, 1000000),
     }
 
     random_sampler = optuna.samplers.RandomSampler(seed=2025)
