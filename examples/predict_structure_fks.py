@@ -51,7 +51,7 @@ class ConfigScheduler:
                 "rmsd_cutoff": [20, 40],
             }
 
-            self.logging_params = ["rmsd_sigma_threshold", "ita", "rmsd_cutoff", "seed"]
+        self.logging_params = ["rmsd_sigma_threshold", "ita", "rmsd_cutoff", "seed", "ref_file"]
 
         for params in product(*self.param_grid.values()):
             self.configs.append(dict(zip(self.param_grid.keys(), params)))
@@ -61,8 +61,13 @@ class ConfigScheduler:
         for config in self.configs:
             yield config
 
+    def _fmt(self, v):
+        if isinstance(v, float):
+            return f"{v:.4f}"
+        return str(v)
+
     def param_dict_format(self, config):
-        return "_".join([f"{v}" for k, v in config.items() if k in self.logging_params])
+        return "_".join([f"{self._fmt(config[k])}" for k in self.logging_params])
 
     def save_progress(self):
         # multiprocess safe
@@ -170,7 +175,7 @@ def run_trial(trial_config):
 
     proj_dir = Path(__file__).resolve().parent.parent
     fasta_file = proj_dir / "examples" / "glue_example.fasta"
-    cif_file = proj_dir / "examples" / "state1.cif"
+    cif_file = proj_dir / "examples" / cfg["ref_file"]
     target_file = proj_dir / "examples" / "9nfr_clean.cif"
     score = run(cfg, str(fasta_file), str(cif_file), str(target_file))
     print(f"Score: {score}")
@@ -193,6 +198,7 @@ if __name__ == "__main__":
         "ita": 0.8910603983681669,
         "rmsd_cutoff": 1.0223982331084525,
         "seed": tune.randint(0, 1000000),
+        "ref_file": tune.choice(["state1.cif", "state2.cif", "state3.cif", "state4.cif"]),
     }
 
     random_sampler = optuna.samplers.RandomSampler(seed=2025)
@@ -208,7 +214,7 @@ if __name__ == "__main__":
         config=search_space,
         resources_per_trial={"cpu": 8, "gpu": 1},
         resume="AUTO",
-        num_samples=100,
+        num_samples=400,
     )
     best_config = analysis.get_best_config(metric="score", mode="min")
 
