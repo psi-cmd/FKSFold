@@ -3,6 +3,11 @@ from typing import Tuple
 import torch
 import requests
 
+from .config import global_config
+from .seq_align import map_indices
+
+
+INVALID_LIGAND_RES_NAMES = ["HOH", "ZN", "NA", "CL", "K", "MG", "CA", "MN", "FE", "CU"]
 
 def build_restype_mapping(struct_ctx):
     """
@@ -26,6 +31,7 @@ from Bio.Data.IUPACData import protein_letters_3to1
 import pandas as pd
 import numpy as np
 import difflib
+from scipy.spatial import cKDTree
 
 three2one = {k.upper(): v.upper() for k, v in protein_letters_3to1.items()}
 
@@ -59,11 +65,16 @@ class ProteinDFUtils:
         return cif_df.query(f"label_asym_id == '{chain_id}'")
 
     @staticmethod
-    def get_chain_res_seqs(chain_id, cif_df):
+    def get_chain_res_seqs(chain_id, cif_df, return_seq_id: bool = False):
         three_letters = cif_df.query(f"label_asym_id == '{chain_id}'") \
                 .sort_values("label_seq_id").groupby("label_seq_id")["label_comp_id"] \
                 .unique().explode().tolist()
-        return [three2one[three_letter] for three_letter in three_letters if three_letter in three2one]
+        if not return_seq_id:
+            return [three2one[three_letter] for three_letter in three_letters if three_letter in three2one]
+        corresponding_seq_id = cif_df.query(f"label_asym_id == '{chain_id}'") \
+            .sort_values("label_seq_id").groupby("label_seq_id")["label_seq_id"] \
+            .unique().explode().tolist()
+        return [three2one[three_letter] for three_letter in three_letters if three_letter in three2one], corresponding_seq_id
 
     @staticmethod
     def match_chains(df1, df2):
@@ -82,23 +93,26 @@ class ProteinDFUtils:
         pass
     
     @staticmethod
-    def _kabsch_rmsd_and_derivative(coords1: np.ndarray, coords2: np.ndarray) -> Tuple[float, np.ndarray]:
-        """Compute RMSD after optimal superposition AND its gradient w.r.t coords1 (moving set)."""
-        assert coords1.shape == coords2.shape and coords1.shape[0] >= 3, "Need at least 3 matched atoms"
-
-        # Center the coordinate sets
-        P = coords1 - coords1.mean(axis=0, keepdims=True)  # moving
-        Q = coords2 - coords2.mean(axis=0, keepdims=True)  # reference
-
-        # Kabsch alignment (rotate Q onto P)
-        H = P.T @ Q
+    def kabsch(coords1: np.ndarray, coords2: np.ndarray) -> np.ndarray:
+        assert coords1.shape == coords2.shape and coords1.shape[0] >= 3
+        P = coords1 - coords1.mean(0, keepdims=True)
+        Q = coords2 - coords2.mean(0, keepdims=True)
+        H = Q.T @ P
         U, _, Vt = np.linalg.svd(H)
-        R = Vt.T @ U.T
+        R = U @ Vt
         if np.linalg.det(R) < 0:
             Vt[-1, :] *= -1
             R = Vt.T @ U.T
 
-        Q_rot = (R @ Q.T).T
+        Q_rot = Q @ R
+        diff = P - Q_rot
+        return diff
+
+    @staticmethod
+    def kabsch_square_error_and_derivative(coords1: np.ndarray, coords2: np.ndarray) -> Tuple[float, np.ndarray]:
+        """Rotate coords2 onto coords1, return Σ‖P−Q_rot‖² and ∂/∂coords1."""
+        diff = ProteinDFUtils.kabsch(coords1, coords2)
+        square_error = np.sum(diff ** 2)
 
         diff = P - Q_rot                        # shape (N,3)
         N    = coords1.shape[0]
@@ -173,6 +187,25 @@ class ProteinDFUtils:
             # reassign res_seq_id start from same value
             chain_1.loc[:, "label_seq_id"] = chain_1["label_seq_id"].astype(int) - chain_1["label_seq_id"].astype(int).min()
             chain_2.loc[:, "label_seq_id"] = chain_2["label_seq_id"].astype(int) - chain_2["label_seq_id"].astype(int).min()
+            # pos: label_seq_id mapping
+            unique_ids1 = sorted(chain_1.label_seq_id.unique())
+            pos2seq1 = {pos: seqid for pos, seqid in enumerate(unique_ids1)}
+            unique_ids2 = sorted(chain_2.label_seq_id.unique())
+            pos2seq2 = {pos: seqid for pos, seqid in enumerate(unique_ids2)}
+
+            chain_1_seq = "".join(ProteinDFUtils.get_chain_res_seqs(chain_id_1, df_update))
+            chain_2_seq = "".join(ProteinDFUtils.get_chain_res_seqs(chain_id_2, df_ref))
+            mapping = map_indices(chain_1_seq, chain_2_seq)
+            seqid_map = [(pos2seq1[i], pos2seq2[j]) for i, j in mapping]
+            # 根据 mapping，仅保留 chain_2 中与 chain_1 匹配的残基，并将 label_seq_id 重新赋值为 chain_1 的 label_seq_id
+            chain_1_seqid, chain_2_seqid = zip(*seqid_map)
+            # 只保留 chain_2_pos 对应的残基
+            chain_2_filtered = chain_2[chain_2["label_seq_id"].isin(chain_2_seqid)].copy()
+            # 构建 chain_2_pos 到 chain_1_pos 的映射
+            seqid_map_reversed = dict(zip(chain_2_seqid, chain_1_seqid))
+            # 重新赋值 label_seq_id
+            chain_2_filtered["label_seq_id"] = chain_2_filtered["label_seq_id"].map(seqid_map_reversed)
+            chain_2 = chain_2_filtered
             # match atoms by res_seq_id and atom_name, and calculate rmsd
             chain_1_atoms = chain_1[["label_seq_id", "label_atom_id", "Cartn_x", "Cartn_y", "Cartn_z", "atom_index"]].copy()
             chain_2_atoms = chain_2[["label_seq_id", "label_atom_id", "Cartn_x", "Cartn_y", "Cartn_z"]].copy()
@@ -249,7 +282,53 @@ class ProteinDFUtils:
         coords1_all = np.concatenate(coords1_list, axis=0)
         coords2_all = np.concatenate(coords2_list, axis=0)
 
-        rmsd_total, grad_all = ProteinDFUtils._kabsch_rmsd_and_derivative(coords1_all, coords2_all)
+        # ----------------------------------------------------------------------------
+        # Interface-specific alignment logic
+        # When `global_config["interfacial_radius"]` is set to a positive value, we
+        # follow the strategy implemented in `examples/align_interface.py`:
+        #   1. Build a KD-tree of ligand atoms in the reference structure.
+        #   2. Select protein atoms whose minimum distance to any ligand atom is
+        #      within the given radius.
+        #   3. Perform Kabsch alignment **only** on these interface atoms and use
+        #      the resulting square error / derivative as the scoring target.
+        # If the radius is 0 / not provided, or fewer than 3 interface atoms are
+        # found, we gracefully fall back to the global RMSD calculation.
+        # ----------------------------------------------------------------------------
+
+        interfacial_radius = global_config.get("interfacial_radius", 0)
+        use_interface = interfacial_radius is not None and interfacial_radius > 0
+
+        if use_interface and not df_ref_lig.empty:
+            # 1) KD-tree of ligand atoms (reference structure)
+            lig_coords = df_ref_lig[["Cartn_x", "Cartn_y", "Cartn_z"]].to_numpy(dtype=float)
+            tree = cKDTree(lig_coords)
+
+            # 2) Compute distance of each reference atom to the closest ligand atom
+            distances, _ = tree.query(coords2_all)
+            mask = distances <= interfacial_radius
+
+            # 3) Require at least 3 atoms for a stable Kabsch solution
+            if np.count_nonzero(mask) >= 3:
+                coords1_sel = coords1_all[mask]
+                coords2_sel = coords2_all[mask]
+
+                se_total, grad_sel = ProteinDFUtils.kabsch_square_error_and_derivative(
+                    coords1_sel, coords2_sel
+                )
+
+                # Gradients: only interface atoms have non-zero entries
+                grad_all = np.zeros_like(coords1_all)
+                grad_all[mask] = grad_sel
+            else:
+                # Not enough interface atoms — fall back to global alignment
+                se_total, grad_all = ProteinDFUtils.kabsch_square_error_and_derivative(
+                    coords1_all, coords2_all
+                )
+        else:
+            # Default global alignment (original behaviour)
+            se_total, grad_all = ProteinDFUtils.kabsch_square_error_and_derivative(
+                coords1_all, coords2_all
+            )
 
         # map gradients back
         deriv_array[np.array(index_list, dtype=int)] = grad_all.astype(np.float32)
@@ -259,19 +338,21 @@ class ProteinDFUtils:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         deriv_array = deriv_array.to(device).float()
 
-        if sigma_next < fk_sigma_threshold:
-            progress = (fk_sigma_threshold - sigma_next) / fk_sigma_threshold
-            protein_lr_rmsd  = kwargs["protein_lr_max"] * progress.clamp(0,1)     # lr_max 先设 0.5
-            ligand_lr_rmsd  = kwargs["ligand_lr_max"] * progress.clamp(0,1)     # lr_max 先设 0.5
-            n_matched_atoms = (deriv_array.norm(dim=1) > 0).sum().item()
-            protein_lr_rmsd *= n_matched_atoms
-            ligand_lr_rmsd *= n_matched_atoms
+        # progress = (fk_sigma_threshold - sigma_next) / fk_sigma_threshold
+        # protein_lr_rmsd  = kwargs["protein_lr_max"] * progress.clamp(0,1)     # lr_max 先设 0.5
+        # ligand_lr_rmsd  = kwargs["ligand_lr_max"] * progress.clamp(0,1)     # lr_max 先设 0.5
+        # n_matched_atoms = (deriv_array.norm(dim=1) > 0).sum().item()
+        # protein_lr_rmsd *= n_matched_atoms
+        # ligand_lr_rmsd *= n_matched_atoms
 
-            ligand_indices = df_update_lig["atom_index"].to_numpy(dtype=int)
-            all_indices = np.arange(deriv_array.shape[0])
-            is_ligand = np.isin(all_indices, ligand_indices)  # shape: (N_atoms,)
-            deriv_array[~is_ligand] = protein_lr_rmsd * deriv_array[~is_ligand]
-            deriv_array[is_ligand] = ligand_lr_rmsd * deriv_array[is_ligand]
+        ligand_indices = df_update_lig["atom_index"].to_numpy(dtype=int)
+        all_indices = np.arange(deriv_array.shape[0])
+        is_ligand = np.isin(all_indices, ligand_indices)  # shape: (N_atoms,)
+        # deriv_array[~is_ligand] = protein_lr_rmsd * deriv_array[~is_ligand]
+        # deriv_array[is_ligand] = ligand_lr_rmsd * deriv_array[is_ligand]
+        deriv_array[~is_ligand] = global_config["protein_lr_max"] * deriv_array[~is_ligand]
+        deriv_array[is_ligand] = global_config["ligand_lr_max"] * deriv_array[is_ligand]
+        # deriv_array *= n_matched_atoms
 
         return rmsd_total, deriv_array.unsqueeze(0), df_update_lig["atom_index"].to_numpy(dtype=int)
 

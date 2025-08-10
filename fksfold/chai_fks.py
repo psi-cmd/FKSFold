@@ -221,15 +221,23 @@ class ParticleFilter:
     
     def resample(self) -> None:
         """Resample particles based on their scores"""
-        if not all(p.avg_interface_ptm is not None for p in self.particles):
+        if not all(p.avg_interface_ptm is not None for p in self.particles) or not all(p.square_error is not None for p in self.particles):
             return
         if global_config["rmsd_sigma_threshold"] == 0 and global_config["fk_sigma_threshold"] == 0:
             return
         
         current_scores = torch.zeros(len(self.particles), device=self.device)
         # Get current scores
+        atom_num = self.particles[0].atom_pos.shape[1]
+        rmsd = torch.sqrt(torch.tensor([p.square_error for p in self.particles], device=self.device) / atom_num) 
+        with open("rmsd.txt", "a") as f:
+            f.write("\t".join([str(x.item()) for x in rmsd]))
+            f.write("\n")
         if global_config["current_sigma"] < global_config["rmsd_sigma_threshold"]:
-            rmsd_scores = torch.tensor([-p.rmsd / 20 for p in self.particles], device=self.device)
+            z = -((rmsd - rmsd.mean()) / (rmsd.std(unbiased=False) + 1e-6))
+            rmsd_scores =  -z / 4
+            if rmsd_scores.isnan().any():
+                breakpoint()
             print("rmsd_scores:", rmsd_scores)
             current_scores += rmsd_scores
         if global_config["current_sigma"] < global_config["fk_sigma_threshold"]:
@@ -268,7 +276,9 @@ class ParticleFilter:
         
         # Multinomial sampling with lambda weight
         indices = torch.multinomial(probs, num_samples=self.num_particles, replacement=True)
-        
+        with open("resampling.txt", "a") as f:
+            f.write(str([indices.tolist(), probs.tolist()]))
+            f.write("\n")
         # Create new particle list based on "indices" sampling
         new_particles = []
         for idx in indices:
@@ -621,6 +631,23 @@ def run_folding_on_context(
                 )
                 d_i_prime = (atom_pos_candidate - denoised_pos) / sigma_next
                 atom_pos_candidate = atom_pos_candidate + (sigma_next - sigma_hat) * ((d_i_prime + d_i) / 2)
+            if sigma_next < (2 * global_config["rmsd_diffusion_steering_threshold"] + global_config["rmsd_cutoff"]) and sigma_next > global_config["rmsd_cutoff"]:
+                particle.square_error, particle.square_error_derivative, ligand_index = get_square_error_and_derivative(inputs, atom_pos_hat, ref_df, kwargs["fasta_file"], ref_structure_file,
+                                                                                                    sigma_next=sigma_next, fk_sigma_threshold=fk_sigma_threshold, protein_lr_max=kwargs["protein_lr_max"],
+                                                                                                    ligand_lr_max=kwargs["ligand_lr_max"], particle=particle)
+                print(f"square_error: {particle.square_error}")
+                # from https://arxiv.org/abs/2502.09372
+                g_raw = particle.square_error_derivative.to(device).float()
+                delta_norm = torch.linalg.norm(d_i.reshape(d_i.shape[0], -1), dim=1, keepdim=True).unsqueeze(1)
+                g_norm = torch.linalg.norm(g_raw.reshape(g_raw.shape[0], -1), dim=1, keepdim=True).unsqueeze(1)
+                g_raw = g_raw / (g_norm + 1e-8) * delta_norm
+                print(f"delta_norm: {delta_norm}, g_norm: {g_norm}")
+                # delta_unit = d_i / (delta_norm + 1e-8)
+                # g_raw = g_raw - delta_unit * g_norm
+                # print(f"g_ortho: {g_raw}")
+                ita_schedule = lambda x: max(torch.sin(((sigma_next - global_config["rmsd_cutoff"]) / global_config["rmsd_diffusion_steering_threshold"]) * np.pi / 2) * x, 0)
+                ita = ita_schedule(global_config["ita"])
+                # ita = global_config["ita"]
 
             if sigma_next < global_config["rmsd_sigma_threshold"]:
                 particle.rmsd, particle.rmsd_derivative, ligand_index = get_rmsd_and_derivative(inputs, particle.atom_pos, ref_df, kwargs["fasta_file"], ref_structure_file,
@@ -632,7 +659,7 @@ def run_folding_on_context(
             particle.atom_pos = atom_pos_candidate
 
             if "save_intermediate" in kwargs and kwargs["save_intermediate"]:
-                cif_out_path = output_dir.joinpath(f"pred.model_idx_{step_idx}_particle_{particle_idx}.cif")
+                cif_out_path = output_dir.joinpath(f"pred.model_idx_{step_idx}_particle_{particle_idx}_sigma_{sigma_next:.2f}.cif")
                 save_to_cif(
                     coords=particle.atom_pos.to(device="cpu"),
                     bfactors=None,
@@ -695,6 +722,11 @@ def run_folding_on_context(
                     particle.plddt = temp_plddt.detach()
                     particle.interface_ptm = ptm_scores.interface_ptm.detach()
                     particle.avg_interface_ptm = ptm_scores.interface_ptm.mean().item()
+
+                    particle.square_error, _, _ = get_square_error_and_derivative(inputs, particle.atom_pos, ref_df, kwargs["fasta_file"], ref_structure_file,
+                                                                                                sigma_next=sigma_next, fk_sigma_threshold=fk_sigma_threshold, protein_lr_max=kwargs["protein_lr_max"],
+                                                                                                ligand_lr_max=kwargs["ligand_lr_max"], particle=particle)
+                    print(f"square_error: {particle.square_error}")
                     
 
             # Perform resampling

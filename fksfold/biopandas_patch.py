@@ -64,6 +64,9 @@ def apply_patch() -> None:  # noqa: D401 – simple description
                         full_df[col] = full_df[counterpart]
                     else:
                         full_df[col] = "" if dtype == str else pd.NA
+            
+            if col not in full_df.columns:
+                full_df[col] = "" if dtype == str else pd.NA
 
         full_df = full_df.astype(mmcif_col_types, errors="ignore")
 

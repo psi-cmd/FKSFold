@@ -12,8 +12,8 @@ from typing import Any, Dict, Optional
 global_config: Dict[str, Any] = {
     # 当前扩散步长 sigma，用于在不同模块之间共享进度信息；初始化为 None。
     "current_sigma": None,
-    # 触发 RMSD 约束的 sigma 阈值；当 `current_sigma < rmsd_sigma_threshold` 时生效。
-    "rmsd_sigma_threshold": 1.0,
+    # 触发 RMSD 约束的 sigma 阈值；当 `current_sigma < rmsd_diffusion_steering_threshold` 时生效。
+    "rmsd_diffusion_steering_threshold": 1.0,
     # 触发 FK (frame/ptm) 约束的 sigma 阈值；当 `current_sigma < fk_sigma_threshold` 时生效。
     "fk_sigma_threshold": 1.0,
 }
@@ -25,7 +25,7 @@ def update_global_config(**kwargs: Any) -> None:
     Example::
 
         from fksfold.config import update_global_config
-        update_global_config(rmsd_sigma_threshold=0.8, fk_sigma_threshold=0.5)
+        update_global_config(rmsd_diffusion_steering_threshold=0.8, fk_sigma_threshold=0.5)
     """
 
     for k, v in kwargs.items():
