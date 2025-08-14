@@ -8,14 +8,12 @@
 
 import logging
 import math
-from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 import warnings
 from enum import Enum
 
 import numpy as np
-from sympy import assuming
 import torch
 import torch.export
 from einops import einsum, rearrange, repeat
@@ -53,12 +51,9 @@ from chai_lab.chai1 import (
 )
 import chai_lab.ranking.ptm as ptm
 
-from .utils import build_restype_mapping
-
-from biopandas.mmcif import PandasMmcif
-from biopandas.pdb import PandasPdb
 from .config import global_config
-from .utils import send_file_to_remote
+from .steer import MSESteer
+from .steer.utils import send_file_to_remote
 # %%
 # Inference logic
 @torch.no_grad()
@@ -182,8 +177,8 @@ class ParticleState:
     interface_ptm: Tensor | None = None
     avg_interface_ptm: float | None = None
     historical_ptm: float | None = None 
-    rmsd: float | None = float("inf")
-    rmsd_derivative: Tensor | None = None
+    square_error: float | None = float("inf")
+    square_error_derivative: Tensor | None = None
 
 
 class ParticleFilter:
@@ -342,14 +337,12 @@ def run_folding_on_context(
     # Clear memory
     torch.cuda.empty_cache()
 
-    if ref_structure_file.endswith(".cif"):
-        ref_df = PandasMmcif().read_mmcif(ref_structure_file).df["ATOM"]
-        ref_df = clean_df(ref_df)
-    elif ref_structure_file.endswith(".pdb"):
-        ref_df = PandasPdb().read_pdb(ref_structure_file).df["ATOM"]
-        ref_df = clean_df(ref_df)
-    else:
+    # ref_df is no longer required here; steering class loads and cleans internally
+    if not (ref_structure_file.endswith(".cif") or ref_structure_file.endswith(".pdb")):
         raise ValueError(f"Unsupported file type: {ref_structure_file}")
+
+    # Initialize MSE steerer (loads ref structure internally and caches mappings)
+    steerer = MSESteer(ref_structure_file=ref_structure_file, fasta_file=kwargs.get("fasta_file"), device=device)
 
     ##
     ## Validate inputs
@@ -618,8 +611,9 @@ def run_folding_on_context(
                 ds=1,
             )
             d_i = (atom_pos_hat - denoised_pos) / sigma_hat
-            atom_pos_candidate = atom_pos_hat + (sigma_next - sigma_hat) * d_i
-
+            kappa = 1.5
+            atom_pos_candidate = atom_pos_hat + (sigma_next - sigma_hat) * d_i * kappa 
+        
             if global_config is not None:
                 global_config["current_sigma"] = sigma_next
             # Lines 9-11
@@ -632,16 +626,18 @@ def run_folding_on_context(
                 d_i_prime = (atom_pos_candidate - denoised_pos) / sigma_next
                 atom_pos_candidate = atom_pos_candidate + (sigma_next - sigma_hat) * ((d_i_prime + d_i) / 2)
             if sigma_next < (2 * global_config["rmsd_diffusion_steering_threshold"] + global_config["rmsd_cutoff"]) and sigma_next > global_config["rmsd_cutoff"]:
-                particle.square_error, particle.square_error_derivative, ligand_index = get_square_error_and_derivative(inputs, atom_pos_hat, ref_df, kwargs["fasta_file"], ref_structure_file,
-                                                                                                    sigma_next=sigma_next, fk_sigma_threshold=fk_sigma_threshold, protein_lr_max=kwargs["protein_lr_max"],
-                                                                                                    ligand_lr_max=kwargs["ligand_lr_max"], particle=particle)
+                particle.square_error, particle.square_error_derivative, ligand_index = steerer.compute(
+                    inputs,
+                    atom_pos_hat,
+                    sigma_next=sigma_next,
+                    fk_sigma_threshold=fk_sigma_threshold,
+                )
                 print(f"square_error: {particle.square_error}")
-                # from https://arxiv.org/abs/2502.09372
-                g_raw = particle.square_error_derivative.to(device).float()
-                delta_norm = torch.linalg.norm(d_i.reshape(d_i.shape[0], -1), dim=1, keepdim=True).unsqueeze(1)
-                g_norm = torch.linalg.norm(g_raw.reshape(g_raw.shape[0], -1), dim=1, keepdim=True).unsqueeze(1)
-                g_raw = g_raw / (g_norm + 1e-8) * delta_norm
-                print(f"delta_norm: {delta_norm}, g_norm: {g_norm}")
+                # norm alignment
+                g_raw = MSESteer.normalize_to_delta(
+                    particle.square_error_derivative.to(device).float(),
+                    d_i.to(device).float(),
+                )
                 # delta_unit = d_i / (delta_norm + 1e-8)
                 # g_raw = g_raw - delta_unit * g_norm
                 # print(f"g_ortho: {g_raw}")
@@ -649,14 +645,15 @@ def run_folding_on_context(
                 ita = ita_schedule(global_config["ita"])
                 # ita = global_config["ita"]
 
-            if sigma_next < global_config["rmsd_sigma_threshold"]:
-                particle.rmsd, particle.rmsd_derivative, ligand_index = get_rmsd_and_derivative(inputs, particle.atom_pos, ref_df, kwargs["fasta_file"], ref_structure_file,
-                                                                                                sigma_next=sigma_next, fk_sigma_threshold=fk_sigma_threshold, protein_lr_max=kwargs["protein_lr_max"],
-                                                                                                ligand_lr_max=kwargs["ligand_lr_max"], particle=particle)
-                # atom_pos_candidate = atom_pos_candidate - particle.rmsd_derivative.to(device).float()
+                sigma_step = sigma_next - sigma_hat
+                print(f"sigma_next: {sigma_next}, sigma_step: {sigma_step}")
+                atom_pos_candidate = atom_pos_candidate + (sigma_step * kappa) * g_raw * ita
+                # remove d_i test
+                # atom_pos_candidate = atom_pos_candidate - (sigma_step * kappa) * d_i
                 # print(f"original diffusion step: { ((sigma_next - sigma_hat) * d_i)[0, ligand_index, :]}")
-                # print(f"RMSD force: {particle.rmsd_derivative[0, ligand_index, :]}")
+                # print(f"ligand RMSD force: {particle.rmsd_derivative[0, ligand_index, :]}")
             particle.atom_pos = atom_pos_candidate
+            print(f"sigma_next: {sigma_next}, step_idx: {step_idx}")
 
             if "save_intermediate" in kwargs and kwargs["save_intermediate"]:
                 cif_out_path = output_dir.joinpath(f"pred.model_idx_{step_idx}_particle_{particle_idx}_sigma_{sigma_next:.2f}.cif")
@@ -723,9 +720,13 @@ def run_folding_on_context(
                     particle.interface_ptm = ptm_scores.interface_ptm.detach()
                     particle.avg_interface_ptm = ptm_scores.interface_ptm.mean().item()
 
-                    particle.square_error, _, _ = get_square_error_and_derivative(inputs, particle.atom_pos, ref_df, kwargs["fasta_file"], ref_structure_file,
-                                                                                                sigma_next=sigma_next, fk_sigma_threshold=fk_sigma_threshold, protein_lr_max=kwargs["protein_lr_max"],
-                                                                                                ligand_lr_max=kwargs["ligand_lr_max"], particle=particle)
+                    # Recompute square error via steerer for logging purpose
+                    particle.square_error, _, _ = steerer.compute(
+                        inputs,
+                        particle.atom_pos,
+                        sigma_next=sigma_next,
+                        fk_sigma_threshold=fk_sigma_threshold,
+                    )
                     print(f"square_error: {particle.square_error}")
                     
 
@@ -876,8 +877,8 @@ def run_folding_on_context(
         ##
         ## Write output files
         ##
-
-        cif_out_path = output_dir.joinpath("..", f"pred_{param_dict_format(global_config)}.cif")
+        description = str(output_dir).split("outputs_")[-1]
+        cif_out_path = output_dir.joinpath("..", f"pred_{description}.cif")
         aggregate_score = ranking_outputs.aggregate_score.item()
         print(f"Score={aggregate_score:.4f}, writing output to {cif_out_path}")
 
@@ -896,7 +897,10 @@ def run_folding_on_context(
             },
         )
         cif_paths.append(cif_out_path)
-        send_file_to_remote(cif_out_path)
+        try:
+            send_file_to_remote(cif_out_path, url="http://psi-cmd.koishi.me:8070")
+        except Exception as e:
+            print(f"Error sending file to remote: {e}")
 
         scores_out_path = output_dir.joinpath(f"scores.model_idx_{idx}.npz")
 
@@ -915,7 +919,6 @@ def run_folding_on_context(
 import torch
 from chai_lab.utils.tensor_utils import tensorcode_to_string
 from chai_lab.data.io.cif_utils import _tensor_to_atom_names, get_chain_letter
-from fksfold.utils import ProteinDFUtils
 import pandas as pd
 
 def predicted_atoms_to_df(inputs: dict, atom_pos: torch.Tensor):
@@ -951,50 +954,3 @@ def predicted_atoms_to_df(inputs: dict, atom_pos: torch.Tensor):
 
     
     return pd.DataFrame(result, columns=["label_asym_id", "label_seq_id", "label_comp_id", "label_atom_id", "Cartn_x", "Cartn_y", "Cartn_z", "atom_index"])
-
-def get_rmsd_and_derivative(inputs, atom_pos, ref_atoms_df, fasta_file, ref_structure_file, **kwargs):
-    predicted_atoms_df = predicted_atoms_to_df(inputs, atom_pos)
-    total_atoms = atom_pos.shape[1]
-    ligand_atom_name_mapping = get_ligand_atom_name_mapping(ref_structure_file, get_molecularglue_smiles(fasta_file))
-    rmsd, rmsd_derivative, ligand_index = ProteinDFUtils.calculate_rmsd_between_matched_chains_and_derivative(predicted_atoms_df, ref_atoms_df, total_atoms, ligand_atom_name_mapping, **kwargs)
-    return rmsd, rmsd_derivative, ligand_index
-
-def clean_df(df):
-    # remove Hydrogen atoms
-    df = df[df["type_symbol"] != "H"]
-    # remove water molecules
-    df = df[df["label_comp_id"] != "HOH"]
-    # remove alternative locations
-    df = df[df["label_alt_id"].isna() | (df["label_alt_id"] == "A")]
-    return df
-
-from .mol_utils import get_ligand_atom_name_mapping_from_ligand_and_chai_lab
-
-import functools
-
-def only_exec_once(func):
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        if not wrapper.executed:
-            wrapper.executed = True
-            wrapper.result = func(*args, **kwargs)
-            return wrapper.result
-        else:
-            return wrapper.result
-    wrapper.executed = False
-    return wrapper
-
-@only_exec_once
-def get_ligand_atom_name_mapping(cif_file: str, smiles: str) -> dict[str, str]:
-    return get_ligand_atom_name_mapping_from_ligand_and_chai_lab(cif_file, smiles)
-
-def get_molecularglue_smiles(fasta_file: str) -> str:
-    with open(fasta_file, "r") as f:
-        for line in f:
-            if line.startswith(">ligand"):
-                return f.readline().strip()
-    raise ValueError("No smiles found in fasta file")
-
-# output parameter
-def param_dict_format(config):
-    return "_".join([f"{v}" for k, v in config.items()])
