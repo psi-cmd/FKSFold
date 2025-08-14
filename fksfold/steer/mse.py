@@ -17,7 +17,7 @@ from chai_lab.data.io.cif_utils import _tensor_to_atom_names, get_chain_letter
 from .utils import ProteinDFUtils
 from .constants import three2one
 from .seq_align import map_indices
-from ..ligand.mapping import get_ligand_atom_name_mapping_from_ligand_and_chai_lab
+from .ligand.mapping import get_ligand_atom_name_mapping_from_ligand_and_chai_lab
 from ..config import global_config
 
 
