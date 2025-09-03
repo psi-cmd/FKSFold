@@ -10,12 +10,12 @@ from fksfold.chai_fks import run_inference
 # fasta_file = Path(__file__).resolve().parent / "Ripk1_VHL.fasta"
 # target_file = Path(__file__).resolve().parent / "9nfr_clean.cif"
 
-cif_file = Path(__file__).resolve().parent / "state1.cif"
+ref_file = Path(__file__).resolve().parent / "state1.cif"
 fasta_file = Path(__file__).resolve().parent / "glue_example.fasta"
 
 def param_dict_format(config):
     logging_params = ["rmsd_sigma_threshold", "ita", "rmsd_cutoff"]
-    return "_".join([f"{v}" for k, v in config.items() if k in logging_params]) + "_" + cif_file.name
+    return "_".join([f"{v}" for k, v in config.items() if k in logging_params]) + "_" + ref_file.name
 
 
 def run(config):
@@ -51,7 +51,7 @@ def run(config):
         use_esm_embeddings=True,
         low_memory=False,
         use_msa_server=False,
-        ref_structure_file=str(cif_file),
+        ref_structure_file=str(ref_file),
         # rmsd_strength=float(sys.argv[3]),  # from 0 to 1, how strong the RMSD force is
         protein_lr_max=config["protein_lr_max"],
         ligand_lr_max=config["ligand_lr_max"],
