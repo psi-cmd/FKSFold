@@ -5,6 +5,7 @@ import sys
 import os
 import uuid
 from itertools import product
+import re
 
 # import pyplot and set backend to agg
 import matplotlib
@@ -93,7 +94,7 @@ from ray.tune.search.optuna import OptunaSearch
 from ray.tune.schedulers import ASHAScheduler
 import optuna
 # Use local Ray; ignore repeated inits when notebook re-runs
-ray.init(ignore_reinit_error=True)
+ray.init(ignore_reinit_error=True, local_mode=True)
 
 
 # The core folding routine (was remote before, now runs locally and returns a score)
@@ -104,8 +105,6 @@ def run(config, fasta_file, cif_file, target_file, param_format_str: str = None)
     random_str = str(uuid.uuid4())
     tmp_dir = Path(f"./result/tmp_{random_str}")
     os.makedirs(tmp_dir, exist_ok=True)
-
-    fasta_file = sys.argv[1]
 
     with open(fasta_file, "r") as f:
         fasta_context = f.read().strip()
@@ -133,7 +132,7 @@ def run(config, fasta_file, cif_file, target_file, param_format_str: str = None)
         use_esm_embeddings=True,
         low_memory=False,
         use_msa_server=False,
-        ref_structure_file=sys.argv[2],
+        ref_structure_file=cif_file,
         # rmsd_strength=float(sys.argv[3]),  # from 0 to 1, how strong the RMSD force is
         protein_lr_max=config["protein_lr_max"],
         ligand_lr_max=config["ligand_lr_max"],
@@ -174,7 +173,7 @@ def run_trial(trial_config):
     # Constant parameters that are not part of the search space
     base_cfg = {
         "protein_lr_max": 1,  # disable diffusion steering now
-        "ligand_lr_max": 0,
+        "ligand_lr_max": 0,  # this is for protac, matching warhead automatically
         "fk_sigma_threshold": 0,
         "lambda_weight": 10.0,
         "ref_file": "9nfr_clean.cif",

@@ -1,3 +1,4 @@
 examples/result/*
 **/__pycache__/
 examples/progress.pkl
+venv/

@@ -115,7 +115,7 @@ def run_inference(
         constraint_path=constraint_path,
         use_templates_server=use_templates_server,
         templates_path=template_hits_path,
-        esm_device=torch_device,
+        esm_device=torch.device("cpu"),
     )
 
     all_candidates: list[StructureCandidates] = []
