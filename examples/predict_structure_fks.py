@@ -94,7 +94,9 @@ from ray.tune.search.optuna import OptunaSearch
 from ray.tune.schedulers import ASHAScheduler
 import optuna
 # Use local Ray; ignore repeated inits when notebook re-runs
-ray.init(ignore_reinit_error=True, local_mode=True)
+ray.init(ignore_reinit_error=True, local_mode=True, runtime_env={
+    "working_dir": "/tmp"
+})
 
 
 # The core folding routine (was remote before, now runs locally and returns a score)
