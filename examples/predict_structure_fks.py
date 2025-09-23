@@ -94,7 +94,7 @@ from ray.tune.search.optuna import OptunaSearch
 from ray.tune.schedulers import ASHAScheduler
 import optuna
 # Use local Ray; ignore repeated inits when notebook re-runs
-ray.init(ignore_reinit_error=True, local_mode=True, _temp_dir="/tmp/ray")
+ray.init(ignore_reinit_error=True, _temp_dir="/tmp/ray")
 
 
 # The core folding routine (was remote before, now runs locally and returns a score)
@@ -127,7 +127,7 @@ def run(config, fasta_file, cif_file, target_file, param_format_str: str = None)
         potential_type="vanilla",  # "diff" or "max" or "vanilla"
         fk_sigma_threshold=config["fk_sigma_threshold"],
         num_trunk_samples=1,
-        seed=42,
+        seed=config["seed"],
         device="cuda:0",
         use_esm_embeddings=True,
         low_memory=False,
@@ -201,14 +201,8 @@ def run_trial(trial_config):
     tune.report({"score": score})
 
 
-def if_port_is_open(host, port):
-    import socket
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex((host, port)) == 0
 
 if __name__ == "__main__":
-    if not if_port_is_open("psi-cmd.koishi.me", 8000):
-        print("upload server is not open, please check if the server is running")
 
     # Search space for the three hyper-parameters
     import glob
